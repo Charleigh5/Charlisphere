@@ -1,0 +1,6 @@
+{
+  "name": "PhotoSphere 3D Memory Matrix",
+  "description": "Interactive 3D spatial memory sphere and WebGL matrix with Google Photos integration, mathematical density scaling, sub-5ms client vector search, and tri-modal interaction.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

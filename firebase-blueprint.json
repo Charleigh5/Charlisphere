@@ -1,0 +1,55 @@
+{
+  "entities": {
+    "users": {
+      "title": "User Profiles",
+      "description": "Registered user accounts with Google Auth",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "description": "User email" },
+        "displayName": { "type": "string", "description": "User full name" },
+        "photoURL": { "type": "string", "description": "Profile picture URL" },
+        "createdAt": { "type": "string", "description": "ISO timestamp" },
+        "lastLoginAt": { "type": "string", "description": "ISO timestamp" }
+      },
+      "required": ["id", "email"]
+    },
+    "memories": {
+      "title": "Sphere Memories",
+      "description": "User photo sphere memories, uploaded or synced",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique memory ID" },
+        "userId": { "type": "string", "description": "Owner Firebase UID" },
+        "title": { "type": "string", "description": "Memory caption or title" },
+        "description": { "type": "string", "description": "Description / semantic text" },
+        "url": { "type": "string", "description": "Image URL or data URI" },
+        "source": { "type": "string", "description": "google_photos | local_upload | sample" },
+        "googlePhotoId": { "type": "string", "description": "Original Google Photo ID if applicable" },
+        "timestamp": { "type": "string", "description": "Date of the photo" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "isFavorite": { "type": "boolean" },
+        "color": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "url", "source"]
+    },
+    "sphere_settings": {
+      "title": "User Sphere Settings",
+      "description": "User preferences for 3D layout, audio, theme",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "layoutMode": { "type": "string" },
+        "audioMuted": { "type": "boolean" },
+        "audioVolume": { "type": "number" },
+        "sphereRadius": { "type": "number" },
+        "clusteringMode": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["userId"]
+    }
+  }
+}
