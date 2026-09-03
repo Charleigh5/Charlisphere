@@ -26,11 +26,14 @@ import {
   Camera,
   Activity,
   Flame,
-  User as UserIcon,
-  LogIn,
+  CheckSquare,
+  Square,
   Glasses,
   Mic,
   MicOff,
+  Route,
+  Download,
+  Orbit,
 } from 'lucide-react';
 import { Layout3DMode, SpatialSortMode, EngineStats } from '../types';
 import { AudioSynthesizer } from '../engine/AudioSynthesizer';
@@ -55,10 +58,18 @@ interface Props {
   onLayoutChange: (mode: Layout3DMode) => void;
   onSortChange: (mode: SpatialSortMode) => void;
   onSearchChange: (query: string) => void;
-  onOpenGooglePhotos: () => void;
+  onOpenGooglePhotos?: () => void;
   onOpenLocalUpload: () => void;
   onPresetCountChange: (count: number) => void;
   onResetCamera: () => void;
+  onSelectAll?: () => void;
+  onClearSelection?: () => void;
+  showFocusTrail?: boolean;
+  trailCount?: number;
+  onToggleFocusTrail?: () => void;
+  onClearTrail?: () => void;
+  autoRotateEnabled?: boolean;
+  onToggleAutoRotate?: () => void;
 }
 
 export const GlassmorphicHUD: React.FC<Props> = ({
@@ -82,6 +93,14 @@ export const GlassmorphicHUD: React.FC<Props> = ({
   onOpenLocalUpload,
   onPresetCountChange,
   onResetCamera,
+  onSelectAll,
+  onClearSelection,
+  showFocusTrail = true,
+  trailCount = 0,
+  onToggleFocusTrail,
+  onClearTrail,
+  autoRotateEnabled = true,
+  onToggleAutoRotate,
 }) => {
   const [isMuted, setIsMuted] = useState(AudioSynthesizer.getMuted());
   const [showStatsModal, setShowStatsModal] = useState(false);
@@ -139,11 +158,12 @@ export const GlassmorphicHUD: React.FC<Props> = ({
       if (e.key === '4') onLayoutChange('CUBIC_MATRIX');
       if (e.key === 't' || e.key === 'T') onToggleClusterLabels();
       if (e.key === 'v' || e.key === 'V') onToggleVR();
+      if (e.key === 'o' || e.key === 'O') onToggleAutoRotate?.();
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onLayoutChange, onToggleClusterLabels, onToggleVR]);
+  }, [onLayoutChange, onToggleClusterLabels, onToggleVR, onToggleAutoRotate]);
 
   const toggleMute = () => {
     const muted = AudioSynthesizer.toggleMute();
@@ -192,36 +212,44 @@ export const GlassmorphicHUD: React.FC<Props> = ({
 
           <div className="hidden sm:block w-[1px] h-8 bg-white/10" />
 
-          <button
-            id="photosphere-btn-google-photos-top"
-            onClick={onOpenGooglePhotos}
-            className={`px-3.5 sm:px-4 py-2 border rounded-full text-[10px] sm:text-[11px] uppercase tracking-widest transition-all flex items-center gap-1.5 ${
-              currentUser
-                ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25 shadow-sm shadow-emerald-500/20'
-                : 'bg-white/5 border-white/10 text-white/80 hover:text-white hover:bg-white/10'
-            }`}
-          >
-            {currentUser?.photoURL ? (
-              <img
-                src={currentUser.photoURL}
-                alt=""
-                className="w-4 h-4 rounded-full object-cover border border-emerald-400/50"
-                referrerPolicy="no-referrer"
-              />
-            ) : (
-              <Camera className="w-3.5 h-3.5 text-amber-400" />
-            )}
-            <span>{currentUser ? (currentUser.displayName?.split(' ')[0] || 'Photos Sync') : 'Google Auth'}</span>
-          </button>
-
+          {/* Primary Action: Upload Photos (Local Device & Batches) */}
           <button
             id="photosphere-btn-upload-top"
             onClick={onOpenLocalUpload}
-            className="hidden md:flex px-3.5 py-2 bg-white/5 border border-white/10 rounded-full text-[11px] uppercase tracking-widest text-white/80 hover:text-white hover:bg-white/10 transition-colors items-center gap-1.5"
+            className="px-3.5 sm:px-4 py-2 bg-gradient-to-r from-emerald-500/20 to-teal-500/20 hover:from-emerald-500/30 hover:to-teal-500/30 border border-emerald-500/40 rounded-full text-[10px] sm:text-[11px] uppercase tracking-wider text-emerald-300 hover:text-white transition-all flex items-center gap-1.5 shadow-sm shadow-emerald-500/20"
           >
             <Upload className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Local Files</span>
+            <span className="font-semibold">Upload Photos</span>
           </button>
+
+          {/* Batch Selection Action */}
+          {stats.photoCount > 0 && (
+            <button
+              id="photosphere-btn-batch-select-all"
+              onClick={() => {
+                if (selectedCount > 0) {
+                  onClearSelection?.();
+                } else {
+                  onSelectAll?.();
+                }
+              }}
+              className={`px-3 py-1.5 border rounded-full text-[10px] sm:text-[11px] font-mono uppercase tracking-wider flex items-center gap-1.5 transition-all ${
+                selectedCount > 0
+                  ? 'bg-[#38bdf8]/20 border-[#38bdf8]/50 text-[#38bdf8]'
+                  : 'bg-white/5 border-white/10 text-white/60 hover:text-white hover:bg-white/10'
+              }`}
+              title={selectedCount > 0 ? 'Clear batch selection' : 'Select all photos in matrix'}
+            >
+              {selectedCount > 0 ? (
+                <CheckSquare className="w-3.5 h-3.5 text-[#38bdf8]" />
+              ) : (
+                <Square className="w-3.5 h-3.5 text-white/40" />
+              )}
+              <span className="hidden sm:inline">
+                {selectedCount > 0 ? `Selected (${selectedCount})` : `Select All (${stats.photoCount})`}
+              </span>
+            </button>
+          )}
 
           {/* 3D Cluster Theme Labels Toggle */}
           <button
@@ -238,6 +266,43 @@ export const GlassmorphicHUD: React.FC<Props> = ({
             <span className="hidden lg:inline">3D Themes</span>
             <span className={`w-1.5 h-1.5 rounded-full ${showClusterLabels ? 'bg-[#38bdf8]' : 'bg-white/20'}`} />
           </button>
+
+          {/* 3D Navigation Focus Trail Toggle */}
+          <div className="flex items-center gap-1">
+            <button
+              id="photosphere-btn-focus-trail"
+              onClick={onToggleFocusTrail}
+              title={
+                showFocusTrail
+                  ? `Hide 3D Navigation Focus Trail (Key: N) • ${trailCount || 0} visited waypoints`
+                  : 'Show 3D Navigation Focus Trail (Key: N)'
+              }
+              className={`px-3 py-1.5 rounded-full border text-[11px] font-mono uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer ${
+                showFocusTrail
+                  ? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-300 shadow-[0_0_14px_rgba(56,189,248,0.25)]'
+                  : 'bg-white/5 border-white/10 text-white/50 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              <Route className={`w-3.5 h-3.5 ${showFocusTrail ? 'text-cyan-400' : 'text-white/40'}`} />
+              <span className="hidden lg:inline">Trail</span>
+              {Boolean(trailCount && trailCount > 1) && (
+                <span className="px-1.5 py-0.2 rounded-full bg-cyan-400/25 text-cyan-200 text-[9px] font-bold">
+                  {trailCount}
+                </span>
+              )}
+              <span className={`w-1.5 h-1.5 rounded-full ${showFocusTrail ? 'bg-cyan-400' : 'bg-white/20'}`} />
+            </button>
+            {Boolean(trailCount && trailCount > 1 && onClearTrail) && (
+              <button
+                id="photosphere-btn-clear-trail"
+                onClick={onClearTrail}
+                title="Clear 3D Navigation Focus Trail"
+                className="w-6 h-6 rounded-full bg-white/5 hover:bg-white/15 border border-white/10 text-white/40 hover:text-white flex items-center justify-center text-[10px] transition-colors"
+              >
+                ✕
+              </button>
+            )}
+          </div>
 
           {/* WebXR VR Immersion Toggle */}
           <button
@@ -261,6 +326,47 @@ export const GlassmorphicHUD: React.FC<Props> = ({
 
           {/* Quick Utility Icons */}
           <div className="flex items-center gap-1.5">
+            {/* Ambient Auto-Rotation Toggle */}
+            <button
+              id="photosphere-btn-auto-rotate"
+              onClick={onToggleAutoRotate}
+              title={
+                !autoRotateEnabled
+                  ? 'Enable Ambient Auto-Rotation (Key: O)'
+                  : stats.autoRotationStatus === 'ACTIVE'
+                  ? 'Ambient Auto-Rotation: Active (Pauses on user interaction, resumes after 4s idle) (Key: O)'
+                  : stats.autoRotationStatus === 'PAUSED_INTERACTION'
+                  ? 'Ambient Auto-Rotation: Paused (User interacting — resumes when idle) (Key: O)'
+                  : 'Ambient Auto-Rotation: Paused in Focus Mode (Key: O)'
+              }
+              className={`w-9 h-9 rounded-full border flex items-center justify-center transition-all cursor-pointer ${
+                !autoRotateEnabled
+                  ? 'bg-white/5 border-white/10 text-white/30 hover:text-white/70 hover:bg-white/10'
+                  : stats.autoRotationStatus === 'ACTIVE'
+                  ? 'bg-sky-500/15 border-sky-400/50 text-sky-300 shadow-[0_0_14px_rgba(56,189,248,0.3)]'
+                  : 'bg-amber-500/15 border-amber-400/40 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.25)]'
+              }`}
+            >
+              <Orbit
+                className={`w-4 h-4 transition-transform ${
+                  autoRotateEnabled && stats.autoRotationStatus === 'ACTIVE'
+                    ? 'animate-[spin_16s_linear_infinite]'
+                    : ''
+                }`}
+              />
+            </button>
+
+            {/* Download Motion & Interactivity Engine ZIP */}
+            <a
+              id="photosphere-btn-download-engine"
+              href="/photosphere-motion-engine.zip"
+              download="photosphere-motion-engine.zip"
+              title="Download 3D Motion, Interactivity & Visuals Engine (ZIP)"
+              className="w-9 h-9 rounded-full bg-cyan-500/10 hover:bg-cyan-500/25 border border-cyan-400/30 flex items-center justify-center text-cyan-300 hover:text-white transition-all shadow-[0_0_12px_rgba(6,182,212,0.2)]"
+            >
+              <Download className="w-4 h-4" />
+            </a>
+
             <button
               id="photosphere-btn-audio"
               onClick={toggleMute}
@@ -688,7 +794,7 @@ export const GlassmorphicHUD: React.FC<Props> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-4 gap-2">
                 <div className="p-2.5 bg-white/5 rounded-xl border border-white/10 text-center">
                   <div className="text-white/40 text-[9px] uppercase">Frame Rate</div>
                   <div className="text-[#4ade80] text-sm font-bold mt-0.5">{stats.fps} FPS</div>
@@ -701,6 +807,46 @@ export const GlassmorphicHUD: React.FC<Props> = ({
                   <div className="text-white/40 text-[9px] uppercase">NLP Latency</div>
                   <div className="text-[#fbbf24] text-sm font-bold mt-0.5">{stats.searchLatencyMs.toFixed(1)} ms</div>
                 </div>
+                <div className="p-2.5 bg-white/5 rounded-xl border border-white/10 text-center">
+                  <div className="text-white/40 text-[9px] uppercase">Auto-Orbit</div>
+                  <div
+                    className={`text-xs font-bold mt-0.5 ${
+                      !autoRotateEnabled
+                        ? 'text-white/30'
+                        : stats.autoRotationStatus === 'ACTIVE'
+                        ? 'text-sky-400'
+                        : 'text-amber-400'
+                    }`}
+                  >
+                    {!autoRotateEnabled
+                      ? 'OFF'
+                      : stats.autoRotationStatus === 'ACTIVE'
+                      ? 'ACTIVE'
+                      : 'PAUSED'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Package Download Card */}
+              <div className="p-3 bg-gradient-to-r from-sky-950/50 to-cyan-950/50 rounded-xl border border-cyan-400/30 flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-cyan-300 font-bold text-xs flex items-center gap-1.5">
+                    <Download className="w-3.5 h-3.5" />
+                    <span>3D Motion & Interactivity Package (.ZIP)</span>
+                  </div>
+                  <div className="text-white/50 text-[10px] mt-0.5">
+                    15 source files: Canvas, GSAP Transitions, Spline Trails, Texture Cache, Kinematics & Audio
+                  </div>
+                </div>
+                <a
+                  id="photosphere-btn-modal-download"
+                  href="/photosphere-motion-engine.zip"
+                  download="photosphere-motion-engine.zip"
+                  className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-[10px] uppercase tracking-wider transition-all flex items-center gap-1 whitespace-nowrap shadow-[0_0_12px_rgba(6,182,212,0.4)]"
+                >
+                  <Download className="w-3 h-3" />
+                  <span>Download</span>
+                </a>
               </div>
 
               <div className="text-white/40 text-[11px] pt-2 space-y-1">
@@ -712,6 +858,7 @@ export const GlassmorphicHUD: React.FC<Props> = ({
                 <p>• Shift + Drag / Right Click: Screen-space 3D Lasso selection</p>
                 <p>• W/A/S/D or Arrow Keys: Orbit viewport</p>
                 <p>• 1-4 Keys: Switch 3D layout instantly</p>
+                <p>• O Key / Orbit Icon: Ambient auto-rotation (pauses on interaction, resumes when idle)</p>
                 <p>• T Key: Toggle dynamic 3D NLP cluster theme labels</p>
                 <p>• 🎙️ Voice Search: Click mic to speak semantic queries or say "DNA helix", "reset camera"</p>
               </div>

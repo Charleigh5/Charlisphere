@@ -5,21 +5,29 @@
  * camera kinematics, and screen-space lasso picking.
  */
 
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
+import { motion, AnimatePresence } from 'motion/react';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { TAARenderPass } from 'three/addons/postprocessing/TAARenderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { PhotoMemoryItem, Layout3DMode, SpatialSortMode, SpatialClusterTheme } from '../types';
 import { SpatialLayoutEngine } from '../math/SpatialLayoutEngine';
+import { SpatialTransitionEngine, TransitionHandle } from '../engine/SpatialTransitionEngine';
 import { TextureManager } from '../engine/TextureManager';
 import { AudioSynthesizer } from '../engine/AudioSynthesizer';
 import { SpatialAudioProcessor } from '../engine/SpatialAudioProcessor';
 import { VectorNlpEngine } from '../engine/VectorNlpEngine';
 import { WebXREngine } from '../engine/WebXREngine';
+import { FocusTrailEngine } from '../engine/FocusTrailEngine';
+import {
+  evaluateAutoRotation,
+  DEFAULT_AUTO_ROTATION_CONFIG,
+} from '../engine/AutoRotationEngine';
+import { AutoRotationStatus } from '../types';
 
-export const IDLE_AUTO_ORBIT_DELAY_MS = 5000;
-export const AUTO_ORBIT_SPEED_RAD_PER_SEC = 0.065;
+export const IDLE_AUTO_ORBIT_DELAY_MS = DEFAULT_AUTO_ROTATION_CONFIG.idleDelayMs;
+export const AUTO_ORBIT_SPEED_RAD_PER_SEC = DEFAULT_AUTO_ROTATION_CONFIG.baseSpeedRadPerSec;
 
 export interface XRControllerHandle {
   startVR: (performanceMode?: boolean, gestureSensitivity?: number) => Promise<void>;
@@ -129,11 +137,17 @@ interface Props {
     cameraDistance: number;
     fps: number;
     drawCalls: number;
+    autoRotationStatus?: AutoRotationStatus;
   }) => void;
   onXRReady?: (xr: XRControllerHandle) => void;
   onVRStateChange?: (isVR: boolean) => void;
   vrPerformanceMode?: boolean;
   vrGestureSensitivity?: number;
+  showFocusTrail?: boolean;
+  onToggleFocusTrail?: () => void;
+  onTrailCountChange?: (count: number) => void;
+  autoRotateEnabled?: boolean;
+  onToggleAutoRotate?: () => void;
 }
 
 export const PhotoSphereCanvas: React.FC<Props> = ({
@@ -156,6 +170,11 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
   onVRStateChange,
   vrPerformanceMode = true,
   vrGestureSensitivity = 1.0,
+  showFocusTrail = true,
+  onToggleFocusTrail,
+  onTrailCountChange,
+  autoRotateEnabled = true,
+  onToggleAutoRotate,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -170,6 +189,17 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
   const cardsGroupRef = useRef<THREE.Group | null>(null);
   const haloGroupRef = useRef<THREE.Group | null>(null);
   const labelsGroupRef = useRef<THREE.Group | null>(null);
+  const trailGroupRef = useRef<THREE.Group | null>(null);
+
+  // Focus Trail Engine & Visual Resources
+  const trailEngineRef = useRef<FocusTrailEngine>(FocusTrailEngine.getInstance());
+  const trailLineGeoRef = useRef<THREE.BufferGeometry | null>(null);
+  const trailLineMatRef = useRef<THREE.LineBasicMaterial | null>(null);
+  const trailHaloLineGeoRef = useRef<THREE.BufferGeometry | null>(null);
+  const trailHaloLineMatRef = useRef<THREE.LineBasicMaterial | null>(null);
+  const pulseMeshRef = useRef<THREE.Mesh | null>(null);
+  const beaconMeshesRef = useRef<THREE.Mesh[]>([]);
+  const beaconGeoRef = useRef<THREE.RingGeometry | null>(null);
 
   // Previous camera kinematics for delta motion detection (TAA adaptive jitter)
   const prevCamThetaRef = useRef(Math.PI / 4);
@@ -264,6 +294,51 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
     lastUserActivityRef.current = performance.now();
   }, []);
 
+  // Stable Refs for Props to keep continuous 60-120fps render loop uninterrupted
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const searchQueryRef = useRef(searchQuery);
+  searchQueryRef.current = searchQuery;
+  const selectedIdsRef = useRef(selectedIds);
+  selectedIdsRef.current = selectedIds;
+  const focusedItemRef = useRef(focusedItem);
+  focusedItemRef.current = focusedItem;
+  const showClusterLabelsRef = useRef(showClusterLabels);
+  showClusterLabelsRef.current = showClusterLabels;
+  const showFocusTrailRef = useRef(showFocusTrail);
+  showFocusTrailRef.current = showFocusTrail;
+  const onStatsUpdateRef = useRef(onStatsUpdate);
+  onStatsUpdateRef.current = onStatsUpdate;
+  const autoRotateEnabledRef = useRef(autoRotateEnabled);
+  autoRotateEnabledRef.current = autoRotateEnabled;
+  const onToggleAutoRotateRef = useRef(onToggleAutoRotate);
+  onToggleAutoRotateRef.current = onToggleAutoRotate;
+
+  // Persistent vectors & throttle clocks to avoid GC allocations in hot loop
+  const camForwardVecRef = useRef(new THREE.Vector3());
+  const lastAudioTimeRef = useRef(0);
+  const itemsMapRef = useRef(new Map<string, PhotoMemoryItem>());
+
+  // Layout transition tracking with GSAP
+  const prevLayoutModeRef = useRef<Layout3DMode>(layoutMode);
+  const transitionHandleRef = useRef<TransitionHandle | null>(null);
+  const syncClusterLabelsRef = useRef<(() => void) | null>(null);
+  const [transitionInfo, setTransitionInfo] = useState<{
+    fromMode: Layout3DMode;
+    toMode: Layout3DMode;
+    progress: number;
+  } | null>(null);
+
+  // Clean up any running GSAP transition on unmount
+  useEffect(() => {
+    return () => {
+      if (transitionHandleRef.current) {
+        transitionHandleRef.current.kill();
+        transitionHandleRef.current = null;
+      }
+    };
+  }, []);
+
   /**
    * Update target transforms whenever items, layoutMode or sortMode changes
    */
@@ -271,14 +346,64 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
     if (!items.length) return;
     const transforms = SpatialLayoutEngine.calculateTargetTransforms(items, layoutMode, sortMode);
 
+    // Initial placement or instant synchronization
+    const isUninitialized = items[0] && items[0].currentPos[0] === 0 && items[0].currentPos[1] === 0 && items[0].currentPos[2] === 0;
+    if (instant || isUninitialized) {
+      for (let i = 0; i < items.length; i++) {
+        if (transforms[i]) {
+          items[i].targetPos = [...transforms[i].position];
+          items[i].targetRotation = [...transforms[i].rotation];
+          items[i].currentPos = [...transforms[i].position];
+          items[i].rotation = [...transforms[i].rotation];
+        }
+      }
+      prevLayoutModeRef.current = layoutMode;
+      return;
+    }
+
+    // Check if mode has switched between FIBONACCI_SPHERE, DNA_HELIX, GALAXY_CONSTELLATION, CUBIC_MATRIX
+    if (prevLayoutModeRef.current !== layoutMode) {
+      const fromMode = prevLayoutModeRef.current;
+      prevLayoutModeRef.current = layoutMode;
+
+      // Abort any ongoing transition
+      if (transitionHandleRef.current) {
+        transitionHandleRef.current.kill();
+        transitionHandleRef.current = null;
+      }
+
+      // Compute base camera distance for framing
+      const aspect = (containerRef.current?.clientWidth || 1200) / Math.max(1, containerRef.current?.clientHeight || 800);
+      const baseDist = SpatialLayoutEngine.computeCameraDistance(items.length, 50, aspect);
+
+      setTransitionInfo({
+        fromMode,
+        toMode: layoutMode,
+        progress: 0,
+      });
+
+      // Launch GSAP Spatial Morphing Transition
+      transitionHandleRef.current = SpatialTransitionEngine.startTransition({
+        items,
+        targetTransforms: transforms,
+        fromMode,
+        toMode: layoutMode,
+        cameraState: cameraState.current,
+        baseCameraDistance: baseDist,
+        onComplete: () => {
+          transitionHandleRef.current = null;
+          setTransitionInfo(null);
+          syncClusterLabelsRef.current?.();
+        },
+      });
+      return;
+    }
+
+    // Standard non-mode coordinate update (e.g. sorting mode change)
     for (let i = 0; i < items.length; i++) {
       if (transforms[i]) {
         items[i].targetPos = transforms[i].position;
         items[i].targetRotation = transforms[i].rotation;
-        if (instant || (items[i].currentPos[0] === 0 && items[i].currentPos[1] === 0 && items[i].currentPos[2] === 0)) {
-          items[i].currentPos = [transforms[i].position[0], transforms[i].position[1], transforms[i].position[2]];
-          items[i].rotation = [transforms[i].rotation[0], transforms[i].rotation[1], transforms[i].rotation[2]];
-        }
       }
     }
   }, [items, layoutMode, sortMode]);
@@ -533,6 +658,7 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
       }
     });
   }, [items, showClusterLabels, createClusterLabelTexture]);
+  syncClusterLabelsRef.current = syncClusterLabels;
 
   /**
    * Initialize Three.js WebGL Scene
@@ -554,14 +680,17 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
     const camera = new THREE.PerspectiveCamera(50, width / height, 10, 8000);
     cameraRef.current = camera;
 
-    // Renderer
+    // Renderer with native hardware MSAA & high-performance GPU context
     const renderer = new THREE.WebGLRenderer({
       powerPreference: 'high-performance',
-      antialias: false, // TAA pipeline manages sub-pixel jitter and temporal anti-aliasing
+      antialias: true,
       alpha: false,
+      stencil: false,
+      depth: true,
+      preserveDrawingBuffer: false,
     });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.1;
     renderer.xr.enabled = true; // WebXR Device API immersion support
@@ -615,6 +744,89 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
     const labelsGroup = new THREE.Group();
     scene.add(labelsGroup);
     labelsGroupRef.current = labelsGroup;
+
+    // Spatial Navigation Focus Trail Group & Resources
+    const trailGroup = new THREE.Group();
+    scene.add(trailGroup);
+    trailGroupRef.current = trailGroup;
+
+    const MAX_TRAIL_PTS = 320;
+    const trailPosArr = new Float32Array(MAX_TRAIL_PTS * 3);
+    const trailColArr = new Float32Array(MAX_TRAIL_PTS * 3);
+
+    const trailLineGeo = new THREE.BufferGeometry();
+    trailLineGeo.setAttribute('position', new THREE.BufferAttribute(trailPosArr, 3));
+    trailLineGeo.setAttribute('color', new THREE.BufferAttribute(trailColArr, 3));
+    trailLineGeo.setDrawRange(0, 0);
+
+    const trailLineMat = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.92,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const trailLine = new THREE.Line(trailLineGeo, trailLineMat);
+    trailLine.frustumCulled = false;
+    trailGroup.add(trailLine);
+    trailLineGeoRef.current = trailLineGeo;
+    trailLineMatRef.current = trailLineMat;
+
+    // Ambient Halo Line (Soft Outer Glow)
+    const trailHaloPosArr = new Float32Array(MAX_TRAIL_PTS * 3);
+    const trailHaloColArr = new Float32Array(MAX_TRAIL_PTS * 3);
+
+    const trailHaloLineGeo = new THREE.BufferGeometry();
+    trailHaloLineGeo.setAttribute('position', new THREE.BufferAttribute(trailHaloPosArr, 3));
+    trailHaloLineGeo.setAttribute('color', new THREE.BufferAttribute(trailHaloColArr, 3));
+    trailHaloLineGeo.setDrawRange(0, 0);
+
+    const trailHaloLineMat = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.45,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const trailHaloLine = new THREE.Line(trailHaloLineGeo, trailHaloLineMat);
+    trailHaloLine.frustumCulled = false;
+    trailGroup.add(trailHaloLine);
+    trailHaloLineGeoRef.current = trailHaloLineGeo;
+    trailHaloLineMatRef.current = trailHaloLineMat;
+
+    // Animated Energy Pulse Bead
+    const pulseGeo = new THREE.SphereGeometry(3.5, 12, 12);
+    const pulseMat = new THREE.MeshBasicMaterial({
+      color: 0x67e8f9,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const pulseMesh = new THREE.Mesh(pulseGeo, pulseMat);
+    pulseMesh.visible = false;
+    trailGroup.add(pulseMesh);
+    pulseMeshRef.current = pulseMesh;
+
+    // Waypoint Beacon Rings
+    const sharedBeaconGeo = new THREE.RingGeometry(8, 12, 32);
+    beaconGeoRef.current = sharedBeaconGeo;
+    const beaconMeshes: THREE.Mesh[] = [];
+    for (let i = 0; i < 14; i++) {
+      const bMat = new THREE.MeshBasicMaterial({
+        color: 0x38bdf8,
+        transparent: true,
+        opacity: 0.8,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const bMesh = new THREE.Mesh(sharedBeaconGeo, bMat);
+      bMesh.visible = false;
+      trailGroup.add(bMesh);
+      beaconMeshes.push(bMesh);
+    }
+    beaconMeshesRef.current = beaconMeshes;
 
     // Shared Geometries & Materials
     const { width: cardW, height: cardH } = SpatialLayoutEngine.computeCardDimensions(
@@ -680,6 +892,15 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
       });
       labelSpritesRef.current = [];
       TextureManager.disposeAll();
+      trailLineGeo.dispose();
+      trailLineMat.dispose();
+      trailHaloLineGeo.dispose();
+      trailHaloLineMat.dispose();
+      pulseGeo.dispose();
+      pulseMat.dispose();
+      sharedBeaconGeo.dispose();
+      beaconMeshes.forEach((b) => (b.material as THREE.Material).dispose());
+      beaconMeshesRef.current = [];
       taaPassRef.current?.dispose();
       composerRef.current?.dispose();
       renderer.dispose();
@@ -687,16 +908,28 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
   }, []);
 
   /**
-   * Sync 3D Meshes & Cluster Labels when items, layout, sort, or label toggles change
+   * Sync 3D Meshes when items array changes
    */
   useEffect(() => {
     recordUserActivity();
     syncMeshes();
+  }, [items, syncMeshes, recordUserActivity]);
+
+  /**
+   * Sync 3D Cluster Labels only when album items or label toggle changes
+   */
+  useEffect(() => {
     syncClusterLabels();
+  }, [items, showClusterLabels, syncClusterLabels]);
+
+  /**
+   * Update adaptive camera distance when album size changes
+   */
+  useEffect(() => {
     if (!focusedItem) {
       updateAdaptiveCamera();
     }
-  }, [items, layoutMode, sortMode, searchQuery, selectedIds, showClusterLabels, focusedItem, syncMeshes, syncClusterLabels, updateAdaptiveCamera, recordUserActivity]);
+  }, [items.length, focusedItem, updateAdaptiveCamera]);
 
   /**
    * Smoothly frame and lock camera into close-up orbit when focusedItem changes
@@ -724,7 +957,36 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
   }, [focusedItem, items.length, recordUserActivity]);
 
   /**
-   * Main 60 FPS Continuous Render & Kinematics Loop
+   * Track spatial navigation trail waypoints when focusedItem changes
+   */
+  useEffect(() => {
+    if (focusedItem) {
+      trailEngineRef.current.addWaypoint(focusedItem);
+      onTrailCountChange?.(trailEngineRef.current.waypointCount);
+    }
+  }, [focusedItem, onTrailCountChange]);
+
+  /**
+   * Prune trail waypoints if items are removed or deleted
+   */
+  useEffect(() => {
+    const itemMap = new Map(items.map((i) => [i.id, i]));
+    const waypoints = trailEngineRef.current.getWaypoints();
+    let changed = false;
+    for (const wp of waypoints) {
+      if (!itemMap.has(wp.id)) {
+        trailEngineRef.current.remove(wp.id);
+        changed = true;
+      }
+    }
+    if (changed) {
+      onTrailCountChange?.(trailEngineRef.current.waypointCount);
+    }
+  }, [items, onTrailCountChange]);
+
+  /**
+   * Main 60-120 FPS Continuous Render & Kinematics Loop
+   * Uses stable refs and direct hardware MSAA rendering for silky-smooth fluid interactions
    */
   useEffect(() => {
     let prevTimestamp = performance.now();
@@ -735,48 +997,71 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
       const delta = Math.min((timestamp - prevTimestamp) / 1000, 0.1);
       prevTimestamp = timestamp;
 
-      // FPS Measurement
+      const currentItems = itemsRef.current;
+      const currentQuery = searchQueryRef.current;
+      const currentSelected = selectedIdsRef.current;
+      const currentFocused = focusedItemRef.current;
+      const currentShowLabels = showClusterLabelsRef.current;
+      const currentShowTrail = showFocusTrailRef.current;
+
+      // Smooth Camera Kinematics (Momentum, Easing & Ambient Auto-Rotation)
+      const cam = cameraState.current;
+      const isUserInteracting =
+        cam.isDragging ||
+        cam.isMultiTouching ||
+        isLassoActiveRef.current ||
+        Math.abs(cam.momentum.x) > 0.0001 ||
+        Math.abs(cam.momentum.y) > 0.0001 ||
+        Math.abs(cam.zoomMomentum) > 0.001 ||
+        cam.panMomentum.lengthSq() > 0.0001;
+
+      const idleDuration = timestamp - lastUserActivityRef.current;
+      const autoRotationEval = evaluateAutoRotation({
+        enabled: autoRotateEnabledRef.current,
+        idleDurationMs: idleDuration,
+        deltaSeconds: delta,
+        timestamp,
+        isUserInteracting,
+        isFocusModeActive: Boolean(currentFocused),
+      });
+
+      // FPS Measurement & Telemetry throttled to 500ms
       frameCountRef.current++;
       if (timestamp - lastTimeRef.current >= 500) {
         fpsRef.current = Math.round((frameCountRef.current * 1000) / (timestamp - lastTimeRef.current));
         frameCountRef.current = 0;
         lastTimeRef.current = timestamp;
 
-        if (rendererRef.current && items.length > 0) {
-          const R = SpatialLayoutEngine.computeDynamicRadius(items.length);
-          onStatsUpdate({
-            photoCount: items.length,
+        if (rendererRef.current && currentItems.length > 0) {
+          const R = SpatialLayoutEngine.computeDynamicRadius(currentItems.length);
+          onStatsUpdateRef.current({
+            photoCount: currentItems.length,
             sphereRadius: Math.round(R),
             cameraDistance: Math.round(cameraState.current.radius),
             fps: fpsRef.current,
             drawCalls: rendererRef.current.info.render.calls,
+            autoRotationStatus: autoRotationEval.status,
           });
         }
       }
 
-      // Smooth Camera Kinematics (Momentum, Easing & Idle Auto-Orbit)
-      const cam = cameraState.current;
-      const idleDuration = timestamp - lastUserActivityRef.current;
-      const isIdle = idleDuration >= IDLE_AUTO_ORBIT_DELAY_MS;
-      const canAutoOrbit = isIdle && !cam.isDragging && !cam.isMultiTouching && !isLassoActiveRef.current;
+      if (autoRotationEval.isActive) {
+        cam.targetTheta += autoRotationEval.angularStep;
+        cam.theta += autoRotationEval.angularStep;
 
-      if (canAutoOrbit) {
-        // Smoothly ramp in auto-orbit speed over 1.2s to avoid abrupt jumps
-        const ramp = Math.min(1, (idleDuration - IDLE_AUTO_ORBIT_DELAY_MS) / 1200);
-        const orbitStep = AUTO_ORBIT_SPEED_RAD_PER_SEC * delta * ramp;
-
-        cam.targetTheta += orbitStep;
-        cam.theta += orbitStep;
+        if (autoRotationEval.tiltOscillationStep !== 0) {
+          cam.targetPhi = Math.max(0.1, Math.min(3.04, cam.targetPhi + autoRotationEval.tiltOscillationStep));
+        }
 
         // Gently drift pan offset back toward central sphere origin only when not in Focus Mode
-        if (!focusedItem && cam.targetPanOffset.lengthSq() > 0.001) {
-          cam.targetPanOffset.multiplyScalar(Math.max(0, 1 - delta * 0.4 * ramp));
+        if (!currentFocused && cam.targetPanOffset.lengthSq() > 0.001) {
+          cam.targetPanOffset.multiplyScalar(Math.max(0, 1 - delta * 0.45 * autoRotationEval.rampFactor));
         }
       }
 
       // If in Focus Mode, dynamically track the focused item's current spatial position
-      if (focusedItem) {
-        const liveFocusedItem = items.find((i) => i.id === focusedItem.id);
+      if (currentFocused) {
+        const liveFocusedItem = currentItems.find((i) => i.id === currentFocused.id);
         if (liveFocusedItem) {
           cam.targetPanOffset.set(
             liveFocusedItem.targetPos[0],
@@ -819,34 +1104,36 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
         cameraRef.current.position.set(cx, cy, cz);
         cameraRef.current.lookAt(cam.panOffset.x, cam.panOffset.y, cam.panOffset.z);
 
-        // Spatial Audio Processor: update 3D listener position, forward & up vectors
-        const camForward = new THREE.Vector3();
-        cameraRef.current.getWorldDirection(camForward);
-        const camUp = cameraRef.current.up;
+        // Throttled Spatial Audio updates (25Hz) to prevent Web Audio thread saturation
+        if (timestamp - lastAudioTimeRef.current > 40) {
+          lastAudioTimeRef.current = timestamp;
+          cameraRef.current.getWorldDirection(camForwardVecRef.current);
+          const camUp = cameraRef.current.up;
 
-        SpatialAudioProcessor.updateListener(
-          { x: cx, y: cy, z: cz },
-          { x: camForward.x, y: camForward.y, z: camForward.z },
-          { x: camUp.x, y: camUp.y, z: camUp.z }
-        );
-
-        // Real-time spatial tracking and distance attenuation to focused photo memory item
-        if (focusedItem) {
-          const liveFocusedItem = items.find((i) => i.id === focusedItem.id);
-          const fPos = liveFocusedItem ? liveFocusedItem.currentPos : focusedItem.currentPos;
-          SpatialAudioProcessor.updateFocusedItemSpatialAudio(
-            [cx, cy, cz],
-            fPos,
-            focusedItem,
-            { x: camForward.x, y: camForward.y, z: camForward.z },
+          SpatialAudioProcessor.updateListener(
+            { x: cx, y: cy, z: cz },
+            { x: camForwardVecRef.current.x, y: camForwardVecRef.current.y, z: camForwardVecRef.current.z },
             { x: camUp.x, y: camUp.y, z: camUp.z }
           );
-        } else {
-          SpatialAudioProcessor.updateFocusedItemSpatialAudio(
-            [cx, cy, cz],
-            null,
-            null
-          );
+
+          // Real-time spatial tracking and distance attenuation to focused photo memory item
+          if (currentFocused) {
+            const liveFocusedItem = currentItems.find((i) => i.id === currentFocused.id);
+            const fPos = liveFocusedItem ? liveFocusedItem.currentPos : currentFocused.currentPos;
+            SpatialAudioProcessor.updateFocusedItemSpatialAudio(
+              [cx, cy, cz],
+              fPos,
+              currentFocused,
+              { x: camForwardVecRef.current.x, y: camForwardVecRef.current.y, z: camForwardVecRef.current.z },
+              { x: camUp.x, y: camUp.y, z: camUp.z }
+            );
+          } else {
+            SpatialAudioProcessor.updateFocusedItemSpatialAudio(
+              [cx, cy, cz],
+              null,
+              null
+            );
+          }
         }
       }
 
@@ -863,33 +1150,44 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
         }
       }
 
-      // Smooth Node Transform Interpolation (600ms-1200ms cubic ease)
+      // Smooth Node Transform Interpolation
       const lerpSpeed = 0.08; // Smooth 60fps convergence
-      const isQuerying = searchQuery.trim().length > 0;
+      const isQuerying = currentQuery.trim().length > 0;
+      const hoveredIdx = hoveredIndexRef.current;
+      const isFocusModeActive = Boolean(currentFocused);
+      const meshes = meshPoolRef.current;
+      const haloMeshes = haloMeshPoolRef.current;
+      const itemCount = currentItems.length;
+      const isTransitionActive = transitionHandleRef.current?.isRunning() ?? false;
 
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        const mesh = meshPoolRef.current[i];
-        const haloMesh = haloMeshPoolRef.current[i];
+      for (let i = 0; i < itemCount; i++) {
+        const item = currentItems[i];
+        const mesh = meshes[i];
+        const haloMesh = haloMeshes[i];
         if (!mesh || !haloMesh) continue;
 
-        // Position Lerp
-        item.currentPos[0] += (item.targetPos[0] - item.currentPos[0]) * lerpSpeed;
-        item.currentPos[1] += (item.targetPos[1] - item.currentPos[1]) * lerpSpeed;
-        item.currentPos[2] += (item.targetPos[2] - item.currentPos[2]) * lerpSpeed;
+        // Position & Rotation interpolation: if GSAP transition is running, GSAP directly drives coordinates along parabolic arc
+        if (!isTransitionActive) {
+          item.currentPos[0] += (item.targetPos[0] - item.currentPos[0]) * lerpSpeed;
+          item.currentPos[1] += (item.targetPos[1] - item.currentPos[1]) * lerpSpeed;
+          item.currentPos[2] += (item.targetPos[2] - item.currentPos[2]) * lerpSpeed;
+          item.rotation[0] += (item.targetRotation[0] - item.rotation[0]) * lerpSpeed;
+          item.rotation[1] += (item.targetRotation[1] - item.rotation[1]) * lerpSpeed;
+          item.rotation[2] += (item.targetRotation[2] - item.rotation[2]) * lerpSpeed;
+        }
+
         mesh.position.set(item.currentPos[0], item.currentPos[1], item.currentPos[2]);
         haloMesh.position.set(item.currentPos[0], item.currentPos[1], item.currentPos[2]);
 
         // Card Orientation: Face outward or smoothly interpolate rotation
-        mesh.rotation.set(item.targetRotation[0], item.targetRotation[1], item.targetRotation[2]);
-        haloMesh.rotation.set(item.targetRotation[0], item.targetRotation[1], item.targetRotation[2]);
+        mesh.rotation.set(item.rotation[0], item.rotation[1], item.rotation[2]);
+        haloMesh.rotation.set(item.rotation[0], item.rotation[1], item.rotation[2]);
 
         // Visual State Attenuation based on Search NLP, Focus Mode & Selection
-        const isHovered = hoveredIndexRef.current === i;
-        const isSelected = selectedIds.has(item.id);
+        const isHovered = hoveredIdx === i;
+        const isSelected = currentSelected.has(item.id);
         const isMatching = !isQuerying || item.matchScore > 0.15;
-        const isFocusedCard = focusedItem?.id === item.id;
-        const isFocusModeActive = Boolean(focusedItem);
+        const isFocusedCard = currentFocused?.id === item.id;
 
         let targetOpacity = 1.0;
         let targetScale = 1.0;
@@ -897,18 +1195,15 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
         let haloColor = 0x38bdf8; // Cyan default
 
         if (isFocusedCard) {
-          // Locked in Focus Mode: Full vividness and prominent glow
           targetOpacity = 1.0;
           targetScale = 1.42;
           haloOpacity = 0.95;
           haloColor = isSelected ? 0xfbbf24 : 0x38bdf8;
         } else if (isFocusModeActive) {
-          // Background attenuation during Focus Mode for depth-of-field isolation
           targetOpacity = isMatching ? 0.20 : 0.04;
           targetScale = isMatching ? 0.85 : 0.4;
           haloOpacity = 0.0;
         } else if (!isMatching) {
-          // Non-matching nodes attenuation (Section 6)
           targetOpacity = 0.06;
           targetScale = 0.5;
           haloOpacity = 0.0;
@@ -933,9 +1228,13 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
         const mat = mesh.material as THREE.MeshBasicMaterial;
         mat.opacity = item.opacity;
 
-        const haloMat = haloMesh.material as THREE.MeshBasicMaterial;
-        haloMat.opacity = haloOpacity;
-        haloMat.color.setHex(haloColor);
+        // Skip GPU draw of completely invisible halos for performance boost
+        haloMesh.visible = haloOpacity > 0.01;
+        if (haloMesh.visible) {
+          const haloMat = haloMesh.material as THREE.MeshBasicMaterial;
+          haloMat.opacity = haloOpacity;
+          haloMat.color.setHex(haloColor);
+        }
       }
 
       // Dynamic 3D Cluster Theme Labels Interpolation & Floating Animation
@@ -946,7 +1245,7 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
         cl.currentPos[1] += (cl.targetPos[1] - cl.currentPos[1]) * 0.08;
         cl.currentPos[2] += (cl.targetPos[2] - cl.currentPos[2]) * 0.08;
 
-        cl.targetOpacity = showClusterLabels ? 0.95 : 0.0;
+        cl.targetOpacity = currentShowLabels ? 0.95 : 0.0;
         cl.currentOpacity += (cl.targetOpacity - cl.currentOpacity) * 0.12;
 
         const floatOsc = Math.sin(timestamp * 0.002 + i * 1.5) * 4;
@@ -960,6 +1259,121 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
         cl.sprite.visible = cl.currentOpacity > 0.01;
       }
 
+      // Spatial Navigation Focus Trail Animation & Spline Geometry Update
+      if (trailGroupRef.current) {
+        if (!currentShowTrail) {
+          trailGroupRef.current.visible = false;
+        } else {
+          trailGroupRef.current.visible = true;
+          const trailEngine = trailEngineRef.current;
+
+          // Sync live coordinates of waypoints using persistent map to avoid GC churn
+          const itemsMap = itemsMapRef.current;
+          itemsMap.clear();
+          for (let i = 0; i < currentItems.length; i++) {
+            itemsMap.set(currentItems[i].id, currentItems[i]);
+          }
+          trailEngine.syncPositions(itemsMap);
+
+          const waypoints = trailEngine.getWaypoints();
+          const wpCount = waypoints.length;
+
+          if (wpCount >= 2 && trailLineGeoRef.current) {
+            const splinePoints = trailEngine.generateSplinePoints(24);
+            const ptCount = Math.min(splinePoints.length, 320);
+
+            const posAttr = trailLineGeoRef.current.getAttribute('position') as THREE.BufferAttribute;
+            const colAttr = trailLineGeoRef.current.getAttribute('color') as THREE.BufferAttribute;
+
+            const haloPosAttr = trailHaloLineGeoRef.current?.getAttribute('position') as THREE.BufferAttribute | undefined;
+            const haloColAttr = trailHaloLineGeoRef.current?.getAttribute('color') as THREE.BufferAttribute | undefined;
+
+            const posArr = posAttr.array as Float32Array;
+            const colArr = colAttr.array as Float32Array;
+            const haloPosArr = haloPosAttr ? (haloPosAttr.array as Float32Array) : null;
+            const haloColArr = haloColAttr ? (haloColAttr.array as Float32Array) : null;
+
+            for (let p = 0; p < ptCount; p++) {
+              const pt = splinePoints[p];
+              const i3 = p * 3;
+              posArr[i3] = pt.position[0];
+              posArr[i3 + 1] = pt.position[1];
+              posArr[i3 + 2] = pt.position[2];
+
+              // Alpha-weighted RGB for subtle glowing neon path
+              colArr[i3] = pt.color[0] * pt.alpha;
+              colArr[i3 + 1] = pt.color[1] * pt.alpha;
+              colArr[i3 + 2] = pt.color[2] * pt.alpha;
+
+              if (haloPosArr && haloColArr) {
+                haloPosArr[i3] = pt.position[0];
+                haloPosArr[i3 + 1] = pt.position[1];
+                haloPosArr[i3 + 2] = pt.position[2];
+
+                haloColArr[i3] = pt.color[0] * pt.alpha * 0.45;
+                haloColArr[i3 + 1] = pt.color[1] * pt.alpha * 0.45;
+                haloColArr[i3 + 2] = pt.color[2] * pt.alpha * 0.45;
+              }
+            }
+
+            posAttr.needsUpdate = true;
+            colAttr.needsUpdate = true;
+            trailLineGeoRef.current.setDrawRange(0, ptCount);
+
+            if (haloPosAttr && haloColAttr && trailHaloLineGeoRef.current) {
+              haloPosAttr.needsUpdate = true;
+              haloColAttr.needsUpdate = true;
+              trailHaloLineGeoRef.current.setDrawRange(0, ptCount);
+            }
+
+            // Animated Energy Pulse Bead traveling along the path
+            if (pulseMeshRef.current) {
+              const pulseProgress = (timestamp * 0.00045) % 1.0;
+              const pulsePos = FocusTrailEngine.evaluatePulsePosition(splinePoints, pulseProgress);
+              if (pulsePos) {
+                pulseMeshRef.current.position.set(pulsePos[0], pulsePos[1], pulsePos[2]);
+                pulseMeshRef.current.visible = true;
+                const pulseScale = 1.0 + Math.sin(timestamp * 0.008) * 0.35;
+                pulseMeshRef.current.scale.set(pulseScale, pulseScale, pulseScale);
+              }
+            }
+          } else {
+            if (trailLineGeoRef.current) trailLineGeoRef.current.setDrawRange(0, 0);
+            if (trailHaloLineGeoRef.current) trailHaloLineGeoRef.current.setDrawRange(0, 0);
+            if (pulseMeshRef.current) pulseMeshRef.current.visible = false;
+          }
+
+          // Update Waypoint Orientation Beacon Rings
+          const beacons = beaconMeshesRef.current;
+          for (let b = 0; b < beacons.length; b++) {
+            const beacon = beacons[b];
+            if (b < wpCount) {
+              const wp = waypoints[b];
+              const beaconProps = FocusTrailEngine.calculateBeaconProps(b, wpCount);
+
+              beacon.position.set(wp.position[0], wp.position[1], wp.position[2]);
+              if (cameraRef.current) {
+                beacon.quaternion.copy(cameraRef.current.quaternion);
+              }
+
+              let scale = beaconProps.scale;
+              if (beaconProps.isLatest) {
+                scale *= (1.0 + Math.sin(timestamp * 0.006) * 0.15);
+              }
+              beacon.scale.set(scale, scale, scale);
+
+              const bMat = beacon.material as THREE.MeshBasicMaterial;
+              bMat.opacity = beaconProps.opacity;
+              const rgb = FocusTrailEngine.hslToRgb(wp.hue || 200, 0.85, 0.6);
+              bMat.color.setRGB(rgb[0], rgb[1], rgb[2]);
+              beacon.visible = true;
+            } else {
+              beacon.visible = false;
+            }
+          }
+        }
+      }
+
       // Temporal Anti-Aliasing (TAA) Dynamic Motion & Jitter Sampling Optimization
       const dTheta = Math.abs(cam.theta - prevCamThetaRef.current);
       const dPhi = Math.abs(cam.phi - prevCamPhiRef.current);
@@ -971,7 +1385,6 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
       prevCamRadiusRef.current = cam.radius;
       prevPanOffsetRef.current.copy(cam.panOffset);
 
-      const isUserInteracting = cam.isDragging || cam.isMultiTouching || isLassoActiveRef.current;
       const taaState = computeTaaMotionState(dTheta, dPhi, dRadius, dPan, isUserInteracting);
 
       if (taaPassRef.current) {
@@ -1010,13 +1423,11 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
         );
       }
 
-      // Render Three.js Scene via TAA EffectComposer Pipeline or direct stereo WebXR
+      // Direct high-performance single-pass hardware MSAA rendering
       if (rendererRef.current?.xr?.isPresenting) {
         if (sceneRef.current && cameraRef.current) {
           rendererRef.current.render(sceneRef.current, cameraRef.current);
         }
-      } else if (composerRef.current) {
-        composerRef.current.render();
       } else if (rendererRef.current && sceneRef.current && cameraRef.current) {
         rendererRef.current.render(sceneRef.current, cameraRef.current);
       }
@@ -1034,7 +1445,7 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
       }
       cancelAnimationFrame(animFrameIdRef.current);
     };
-  }, [items, searchQuery, selectedIds, onStatsUpdate]);
+  }, []);
 
   /**
    * Sync VR gesture sensitivity multiplier with WebXREngine
@@ -1304,6 +1715,7 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
+    recordUserActivity();
     if (e.pointerType === 'touch') return;
 
     if (isLassoActiveRef.current) {
@@ -1703,19 +2115,46 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
       } else if (e.key === 'r' || e.key === 'R') {
         recordUserActivity();
         resetCamera();
+      } else if (e.key === 'o' || e.key === 'O') {
+        recordUserActivity();
+        onToggleAutoRotateRef.current?.();
+        triggerGestureFeedback(
+          'ROTATE',
+          autoRotateEnabledRef.current ? 'Auto-Orbit Paused' : 'Auto-Orbit Active'
+        );
+      } else if (e.key === 'n' || e.key === 'N') {
+        recordUserActivity();
+        onToggleFocusTrail?.();
+        triggerGestureFeedback('FOCUS', showFocusTrail ? 'Trail Disabled' : 'Trail Enabled');
+      }
+    };
+
+    const handleWindowPointerUp = () => {
+      recordUserActivity();
+      if (cameraState.current.isDragging) {
+        cameraState.current.isDragging = false;
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [resetCamera, recordUserActivity]);
+    window.addEventListener('pointerup', handleWindowPointerUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('pointerup', handleWindowPointerUp);
+    };
+  }, [resetCamera, recordUserActivity, onToggleFocusTrail, showFocusTrail, triggerGestureFeedback]);
 
   return (
     <div
       ref={containerRef}
       id="photosphere-canvas-container"
       className="relative w-full h-full overflow-hidden cursor-grab active:cursor-grabbing select-none touch-none"
-      style={{ touchAction: 'none' }}
+      style={{
+        touchAction: 'none',
+        contain: 'layout size paint',
+        transform: 'translateZ(0)',
+        willChange: 'transform',
+      }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -1727,6 +2166,35 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
       onClick={handleClick}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {/* Dynamic 3D Spatial Layout Morphing Notification Badge via Framer Motion */}
+      <AnimatePresence>
+        {transitionInfo && (
+          <motion.div
+            key="spatial-morph-badge"
+            id="photosphere-spatial-morph-badge"
+            initial={{ opacity: 0, y: -24, scale: 0.94 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -16, scale: 0.94 }}
+            transition={{ duration: 0.25, ease: 'easeOut' }}
+            className="pointer-events-none absolute top-6 left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded-full bg-[#060914]/85 border border-[#38bdf8]/40 backdrop-blur-xl shadow-[0_0_30px_rgba(56,189,248,0.25)] text-xs font-mono tracking-wide text-sky-200 flex items-center gap-3 select-none"
+          >
+            <span className="text-base animate-pulse">
+              {SpatialTransitionEngine.LAYOUT_GLYPHS[transitionInfo.toMode]}
+            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-white/50 text-[11px]">
+                {SpatialTransitionEngine.LAYOUT_TITLES[transitionInfo.fromMode]}
+              </span>
+              <span className="text-sky-400 font-bold">➔</span>
+              <span className="text-sky-300 font-semibold">
+                {SpatialTransitionEngine.LAYOUT_TITLES[transitionInfo.toMode]}
+              </span>
+            </div>
+            <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Dynamic Mobile Gesture Feedback Pill */}
       {activeGesture && (
         <div
@@ -1745,6 +2213,14 @@ export const PhotoSphereCanvas: React.FC<Props> = ({
         width={typeof window !== 'undefined' ? window.innerWidth : 1920}
         height={typeof window !== 'undefined' ? window.innerHeight : 1080}
         className="pointer-events-none absolute inset-0 z-10 w-full h-full"
+        style={{
+          transform: 'translateZ(0)',
+          willChange: 'transform',
+          contain: 'strict',
+          backfaceVisibility: 'hidden',
+          pointerEvents: 'none',
+          imageRendering: 'auto',
+        }}
       />
     </div>
   );

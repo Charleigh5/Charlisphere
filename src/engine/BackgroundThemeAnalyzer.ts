@@ -222,8 +222,8 @@ export class BackgroundThemeAnalyzer {
 
       this.emitProgress(performance.now() - startTime);
 
-      // Time-slicing cooperative multitasking to ensure 60FPS UI
-      await new Promise((resolve) => setTimeout(resolve, 8));
+      // Time-slicing cooperative multitasking to ensure 60-120 FPS UI frame delivery
+      await new Promise((resolve) => setTimeout(resolve, 24));
     }
 
     this.isProcessing = false;

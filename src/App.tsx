@@ -20,6 +20,7 @@ import { SpatialLayoutEngine } from './math/SpatialLayoutEngine';
 import { GooglePhotosConnector } from './connectors/GooglePhotosConnector';
 import { useGooglePhotosSync } from './hooks/useGooglePhotosSync';
 import { useBackgroundThemeAnalyzer } from './hooks/useBackgroundThemeAnalyzer';
+import { FocusTrailEngine } from './engine/FocusTrailEngine';
 
 export default function App() {
   // Core Memory State
@@ -32,12 +33,36 @@ export default function App() {
   const [inspectedItem, setInspectedItem] = useState<PhotoMemoryItem | null>(null);
   const [focusedItem, setFocusedItem] = useState<PhotoMemoryItem | null>(null);
   const [showClusterLabels, setShowClusterLabels] = useState<boolean>(true);
+  const [showFocusTrail, setShowFocusTrail] = useState<boolean>(true);
+  const [trailCount, setTrailCount] = useState<number>(0);
+
+  const handleToggleFocusTrail = useCallback(() => {
+    setShowFocusTrail((prev) => !prev);
+    AudioSynthesizer.playSearchFilter();
+  }, []);
+
+  const handleClearTrail = useCallback(() => {
+    FocusTrailEngine.getInstance().clear();
+    setTrailCount(0);
+    AudioSynthesizer.playSearchFilter();
+  }, []);
 
   // Automated Background Image & Metadata Theme Extraction Hook
   const handleItemEnriched = useCallback((enrichedItem: PhotoMemoryItem) => {
-    setItems((prevItems) =>
-      prevItems.map((item) => (item.id === enrichedItem.id ? { ...item, tags: enrichedItem.tags } : item))
-    );
+    setItems((prevItems) => {
+      const idx = prevItems.findIndex((item) => item.id === enrichedItem.id);
+      if (idx === -1) return prevItems;
+      const currentTags = prevItems[idx].tags;
+      if (
+        currentTags.length === enrichedItem.tags.length &&
+        currentTags.every((t, i) => t === enrichedItem.tags[i])
+      ) {
+        return prevItems;
+      }
+      const next = [...prevItems];
+      next[idx] = { ...next[idx], tags: enrichedItem.tags };
+      return next;
+    });
   }, []);
 
   const {
@@ -62,7 +87,7 @@ export default function App() {
   const [isGooglePhotosOpen, setIsGooglePhotosOpen] = useState(false);
   const [isLocalUploadOpen, setIsLocalUploadOpen] = useState(false);
 
-  // Background Google Photos 5-Minute Sync Hook
+  // Background Google Photos Sync Hook (Paused/Disabled in favor of local device batches)
   const handleSyncSuccess = useCallback((syncedItems: PhotoMemoryItem[]) => {
     if (syncedItems && syncedItems.length > 0) {
       setItems(syncedItems);
@@ -81,12 +106,12 @@ export default function App() {
     triggerSync,
     setToken: setSyncToken,
   } = useGooglePhotosSync({
-    intervalMs: 5 * 60 * 1000, // 5 minutes background polling
-    enabled: true,
-    initialFetch: true,
+    intervalMs: 5 * 60 * 1000,
+    enabled: false, // Paused in favor of local device uploads
+    initialFetch: false,
     onSyncSuccess: handleSyncSuccess,
     onSyncError: (err) => {
-      console.warn('Google Photos background sync error:', err.message);
+      console.warn('Google Photos sync:', err.message);
     },
   });
 
@@ -100,7 +125,16 @@ export default function App() {
     searchLatencyMs: 0.8,
     activeLayout: 'FIBONACCI_SPHERE',
     activeSort: 'CHRONOLOGICAL',
+    autoRotationStatus: 'ACTIVE',
   });
+
+  // Ambient Auto-Rotation State & Controls
+  const [autoRotateEnabled, setAutoRotateEnabled] = useState<boolean>(true);
+
+  const handleToggleAutoRotate = useCallback(() => {
+    setAutoRotateEnabled((prev) => !prev);
+    AudioSynthesizer.playSearchFilter();
+  }, []);
 
   // Zero-dependency Client-Side Vector NLP Engine
   const nlpEngine = useMemo(() => new VectorNlpEngine(), []);
@@ -174,15 +208,96 @@ export default function App() {
     }
   }, [setSyncToken]);
 
-  // Add local uploaded photo items
-  const handleAddLocalItems = useCallback((uploaded: PhotoMemoryItem[]) => {
-    setItems((prev) => [...uploaded, ...prev]);
-    setActiveSourceName(`Custom Uploads (+${uploaded.length})`);
-    setStats((prev) => ({
-      ...prev,
-      photoCount: prev.photoCount + uploaded.length,
-      sphereRadius: Math.round(SpatialLayoutEngine.computeDynamicRadius(prev.photoCount + uploaded.length)),
-    }));
+  // Add or Replace local uploaded photo items & batches
+  const handleAddLocalItems = useCallback(
+    (uploaded: PhotoMemoryItem[], replaceMode = false, batchName?: string) => {
+      const sourceTitle = batchName || `Device Batch (${uploaded.length} photos)`;
+      if (replaceMode) {
+        setItems(uploaded);
+        setActiveSourceName(sourceTitle);
+        setSelectedIds(new Set());
+        setSearchQuery('');
+        setStats((prev) => ({
+          ...prev,
+          photoCount: uploaded.length,
+          sphereRadius: Math.round(SpatialLayoutEngine.computeDynamicRadius(uploaded.length)),
+        }));
+      } else {
+        setItems((prev) => [...uploaded, ...prev]);
+        setActiveSourceName(`${sourceTitle} (+${uploaded.length})`);
+        setStats((prev) => ({
+          ...prev,
+          photoCount: prev.photoCount + uploaded.length,
+          sphereRadius: Math.round(
+            SpatialLayoutEngine.computeDynamicRadius(prev.photoCount + uploaded.length)
+          ),
+        }));
+      }
+    },
+    []
+  );
+
+  // Next / Prev & Matching Items
+  const activeMatchingItems = useMemo(() => {
+    if (selectedIds.size > 0) {
+      return items.filter((i) => selectedIds.has(i.id));
+    }
+    if (searchQuery.trim().length > 0) {
+      return items.filter((i) => i.matchScore > 0.15);
+    }
+    return items;
+  }, [items, selectedIds, searchQuery]);
+
+  // Batch Selection Helpers
+  const handleSelectAll = useCallback(() => {
+    const allMatching = activeMatchingItems.map((i) => i.id);
+    setSelectedIds(new Set(allMatching));
+    AudioSynthesizer.playCardSelect(180);
+  }, [activeMatchingItems]);
+
+  const handleClearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+  }, []);
+
+  const handleBatchDelete = useCallback((idsToDelete: string[]) => {
+    const deleteSet = new Set(idsToDelete);
+    setItems((prev) => {
+      const next = prev.filter((item) => !deleteSet.has(item.id));
+      setStats((s) => ({
+        ...s,
+        photoCount: next.length,
+        sphereRadius: Math.round(SpatialLayoutEngine.computeDynamicRadius(next.length)),
+      }));
+      return next;
+    });
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      idsToDelete.forEach((id) => next.delete(id));
+      return next;
+    });
+    if (focusedItem && deleteSet.has(focusedItem.id)) {
+      setFocusedItem(null);
+    }
+    if (inspectedItem && deleteSet.has(inspectedItem.id)) {
+      setInspectedItem(null);
+    }
+    AudioSynthesizer.playLayoutSwoosh(3);
+  }, [focusedItem, inspectedItem]);
+
+  const handleBatchAddTag = useCallback((idsToTag: string[], newTag: string) => {
+    const tagSet = new Set(idsToTag);
+    setItems((prev) =>
+      prev.map((item) => {
+        if (tagSet.has(item.id)) {
+          return {
+            ...item,
+            tags: Array.from(new Set([...item.tags, newTag])),
+          };
+        }
+        return item;
+      })
+    );
+    AudioSynthesizer.playSearchFilter();
   }, []);
 
   // Quick Preset Count Switcher
@@ -207,17 +322,6 @@ export default function App() {
       return next;
     });
   }, []);
-
-  // Next / Prev In Deep Inspector
-  const activeMatchingItems = useMemo(() => {
-    if (selectedIds.size > 0) {
-      return items.filter((i) => selectedIds.has(i.id));
-    }
-    if (searchQuery.trim().length > 0) {
-      return items.filter((i) => i.matchScore > 0.15);
-    }
-    return items;
-  }, [items, selectedIds, searchQuery]);
 
   const handleFocusNext = useCallback(() => {
     if (!focusedItem || activeMatchingItems.length === 0) return;
@@ -330,6 +434,11 @@ export default function App() {
           onVRStateChange={setIsVrActive}
           vrPerformanceMode={vrPerformanceMode}
           vrGestureSensitivity={vrGestureSensitivity}
+          showFocusTrail={showFocusTrail}
+          onToggleFocusTrail={handleToggleFocusTrail}
+          onTrailCountChange={setTrailCount}
+          autoRotateEnabled={autoRotateEnabled}
+          onToggleAutoRotate={handleToggleAutoRotate}
           onStatsUpdate={(newStats) => {
             setStats((prev) => ({
               ...prev,
@@ -348,7 +457,13 @@ export default function App() {
         selectedCount={selectedIds.size}
         activeSourceName={activeSourceName}
         showClusterLabels={showClusterLabels}
+        showFocusTrail={showFocusTrail}
+        trailCount={trailCount}
+        onToggleFocusTrail={handleToggleFocusTrail}
+        onClearTrail={handleClearTrail}
         isVrActive={isVrActive}
+        autoRotateEnabled={autoRotateEnabled}
+        onToggleAutoRotate={handleToggleAutoRotate}
         themeProgress={themeProgress}
         topThemes={topThemes}
         onTriggerReanalysis={triggerReanalysis}
@@ -364,6 +479,8 @@ export default function App() {
         onOpenLocalUpload={() => setIsLocalUploadOpen(true)}
         onPresetCountChange={handlePresetCountChange}
         onResetCamera={() => setFocusedItem(null)}
+        onSelectAll={handleSelectAll}
+        onClearSelection={handleClearSelection}
       />
 
       {/* Focus Mode 3D Close-Up Orbit Dock */}
@@ -371,6 +488,7 @@ export default function App() {
         <FocusModeDock
           focusedItem={focusedItem}
           items={activeMatchingItems}
+          trailCount={trailCount}
           onExitFocus={() => setFocusedItem(null)}
           onSelectNext={handleFocusNext}
           onSelectPrev={handleFocusPrev}
@@ -378,11 +496,11 @@ export default function App() {
         />
       )}
 
-      {/* 3D Screen Lasso Batch Operations Dock */}
+      {/* 3D Screen Lasso & Batch Operations Dock */}
       <BatchActionBar
         selectedIds={selectedIds}
         items={items}
-        onClearSelection={() => setSelectedIds(new Set())}
+        onClearSelection={handleClearSelection}
         onStartSlideshow={() => {
           const firstSelected = items.find((i) => selectedIds.has(i.id));
           if (firstSelected) {
@@ -391,6 +509,9 @@ export default function App() {
           }
         }}
         onExportSelected={handleExportSelected}
+        onBatchDelete={handleBatchDelete}
+        onBatchAddTag={handleBatchAddTag}
+        onSelectAllMatching={handleSelectAll}
       />
 
       {/* WebXR VR Immersion Launch & Device Modal */}
@@ -416,14 +537,14 @@ export default function App() {
         onSelectPrev={handleSelectPrev}
       />
 
-      {/* Google Photos GIS OAuth Ingestion Modal */}
+      {/* Google Photos GIS OAuth Ingestion Modal (Optional / Secondary) */}
       <GooglePhotosModal
         isOpen={isGooglePhotosOpen}
         onClose={() => setIsGooglePhotosOpen(false)}
         onIngestPhotos={handleIngestPhotos}
       />
 
-      {/* Local Drag & Drop Upload Modal */}
+      {/* Comprehensive Device Batch Photo Ingestion Studio */}
       <LocalUploadModal
         isOpen={isLocalUploadOpen}
         onClose={() => setIsLocalUploadOpen(false)}

@@ -38,23 +38,69 @@ export function useBackgroundThemeAnalyzer({
   const analyzerRef = useRef<BackgroundThemeAnalyzer>(BackgroundThemeAnalyzer.getInstance());
   const prevItemsLengthRef = useRef<number>(0);
 
-  // Subscribe to progress and enriched items
+  // Subscribe to progress and enriched items with throttling to avoid React state churn
   useEffect(() => {
     const analyzer = analyzerRef.current;
+    let lastProgressTime = 0;
+    let progressTimer: number | null = null;
+    let pendingProgress: ThemeAnalyzerProgress | null = null;
 
     const unsubProgress = analyzer.onProgress((p) => {
-      setProgress(p);
-      if (p.status === 'IDLE' && p.processedCount > 0 && p.processedCount === p.totalCount) {
-        onBatchComplete?.(p.themeDistribution);
+      pendingProgress = p;
+      const now = performance.now();
+      if (p.status === 'IDLE' || now - lastProgressTime > 250) {
+        lastProgressTime = now;
+        if (progressTimer) clearTimeout(progressTimer);
+        progressTimer = null;
+        setProgress(p);
+        if (p.status === 'IDLE' && p.processedCount > 0 && p.processedCount === p.totalCount) {
+          onBatchComplete?.(p.themeDistribution);
+        }
+      } else if (!progressTimer) {
+        progressTimer = window.setTimeout(() => {
+          if (pendingProgress) {
+            setProgress(pendingProgress);
+            if (pendingProgress.status === 'IDLE' && pendingProgress.processedCount > 0 && pendingProgress.processedCount === pendingProgress.totalCount) {
+              onBatchComplete?.(pendingProgress.themeDistribution);
+            }
+          }
+          progressTimer = null;
+        }, 250);
       }
     });
 
+    let pendingReports: Array<{ item: PhotoMemoryItem; report: PhotoAnalysisReport }> = [];
+    let flushEnrichedTimer: number | null = null;
+
+    const flushEnriched = () => {
+      if (pendingReports.length === 0) return;
+      const batch = pendingReports;
+      pendingReports = [];
+      setReports((prev) => {
+        const next = new Map(prev);
+        for (const { item, report } of batch) {
+          next.set(item.id, report);
+        }
+        return next;
+      });
+      for (const { item } of batch) {
+        onItemEnriched?.(item);
+      }
+    };
+
     const unsubEnriched = analyzer.onItemEnriched((enrichedItem, report) => {
-      setReports((prev) => new Map(prev).set(enrichedItem.id, report));
-      onItemEnriched?.(enrichedItem);
+      pendingReports.push({ item: enrichedItem, report });
+      if (!flushEnrichedTimer) {
+        flushEnrichedTimer = window.setTimeout(() => {
+          flushEnrichedTimer = null;
+          flushEnriched();
+        }, 200);
+      }
     });
 
     return () => {
+      if (progressTimer) clearTimeout(progressTimer);
+      if (flushEnrichedTimer) clearTimeout(flushEnrichedTimer);
       unsubProgress();
       unsubEnriched();
     };

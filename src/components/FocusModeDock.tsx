@@ -17,6 +17,7 @@ import {
   Orbit,
   Tag,
   Compass,
+  Route,
 } from 'lucide-react';
 import { PhotoMemoryItem } from '../types';
 import { AudioSynthesizer } from '../engine/AudioSynthesizer';
@@ -25,6 +26,7 @@ import { SpatialAudioProcessor } from '../engine/SpatialAudioProcessor';
 interface Props {
   focusedItem: PhotoMemoryItem | null;
   items: PhotoMemoryItem[];
+  trailCount?: number;
   onExitFocus: () => void;
   onSelectNext: () => void;
   onSelectPrev: () => void;
@@ -34,6 +36,7 @@ interface Props {
 export const FocusModeDock: React.FC<Props> = ({
   focusedItem,
   items,
+  trailCount = 0,
   onExitFocus,
   onSelectNext,
   onSelectPrev,
@@ -94,9 +97,14 @@ export const FocusModeDock: React.FC<Props> = ({
               <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-ping" />
               <span>Focus Orbit</span>
             </div>
-            <span className="text-[10px] text-white/40 mt-1 font-mono">
-              {currentIndex >= 0 ? `${currentIndex + 1} / ${totalCount}` : ''}
-            </span>
+            <div className="flex items-center gap-1.5 mt-1 font-mono text-[10px] text-white/40">
+              <span>{currentIndex >= 0 ? `${currentIndex + 1} / ${totalCount}` : ''}</span>
+              {trailCount > 1 && (
+                <span className="text-cyan-300 font-semibold flex items-center gap-0.5" title={`Navigation trail: ${trailCount} visited items`}>
+                  • <Route className="w-2.5 h-2.5 inline" /> {trailCount}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Photo Thumbnail */}

@@ -91,6 +91,15 @@ export interface SpatialClusterTheme {
   itemCount: number;
 }
 
+export interface FocusTrailWaypoint {
+  id: string;
+  position: [number, number, number];
+  timestamp: number;
+  hue: number;
+  dominantColor: string;
+  title: string;
+}
+
 export interface EngineStats {
   photoCount: number;
   sphereRadius: number;
@@ -100,4 +109,14 @@ export interface EngineStats {
   searchLatencyMs: number;
   activeLayout: Layout3DMode;
   activeSort: SpatialSortMode;
+  autoRotationStatus?: AutoRotationStatus;
+}
+
+export type AutoRotationStatus = 'ACTIVE' | 'PAUSED_INTERACTION' | 'PAUSED_FOCUS' | 'DISABLED';
+
+export interface AutoRotationState {
+  enabled: boolean;
+  status: AutoRotationStatus;
+  remainingIdleMs: number;
+  rampFactor: number;
 }

@@ -61,3 +61,26 @@
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.35);
 }
+
+/* Optimized GPU Compositor Layers for 3D Canvas & Lasso Overlay */
+#photosphere-canvas-container {
+  contain: layout size paint;
+  transform: translateZ(0);
+  will-change: transform;
+  overscroll-behavior: none;
+  touch-action: none;
+}
+
+#photosphere-canvas-container > canvas {
+  transform: translateZ(0);
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+#photosphere-canvas-container > canvas#photosphere-lasso-overlay {
+  contain: strict;
+  pointer-events: none;
+  image-rendering: auto;
+  transform: translateZ(0);
+  will-change: transform;
+}
