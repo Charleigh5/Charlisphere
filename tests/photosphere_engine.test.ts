@@ -21,6 +21,18 @@ import {
   IDLE_AUTO_ORBIT_DELAY_MS,
   AUTO_ORBIT_SPEED_RAD_PER_SEC,
 } from '../src/components/PhotoSphereCanvas';
+import {
+  DEFAULT_BLOOM_CONFIG,
+  sanitizeBloomConfig,
+  computeAdaptiveBloom,
+} from '../src/engine/BloomPostProcessingEngine';
+import {
+  DEFAULT_DOF_CONFIG,
+  computeAutoFocusDistance,
+  computeCircleOfConfusion,
+  computeAdaptiveDepthOfField,
+} from '../src/engine/DepthOfFieldEngine';
+import * as THREE from 'three';
 
 describe('PhotoSphere Engine Verification', () => {
   it('Auto-scales sphere radius proportionally to square root of album count', () => {
@@ -1150,6 +1162,134 @@ describe('PhotoSphere Engine Verification', () => {
     it('Verifies PhotoSphereCanvas constants match DEFAULT_AUTO_ROTATION_CONFIG', () => {
       expect(IDLE_AUTO_ORBIT_DELAY_MS).toBe(DEFAULT_AUTO_ROTATION_CONFIG.idleDelayMs);
       expect(AUTO_ORBIT_SPEED_RAD_PER_SEC).toBe(DEFAULT_AUTO_ROTATION_CONFIG.baseSpeedRadPerSec);
+    });
+  });
+
+  describe('Atmospheric Bloom Post-Processing Engine Verification', () => {
+    it('Provides production-safe defaults for atmospheric bloom', () => {
+      expect(DEFAULT_BLOOM_CONFIG.strength).toBe(0.62);
+      expect(DEFAULT_BLOOM_CONFIG.radius).toBe(0.44);
+      expect(DEFAULT_BLOOM_CONFIG.threshold).toBe(0.68);
+      expect(DEFAULT_BLOOM_CONFIG.ambientHaloOpacity).toBe(0.24);
+      expect(DEFAULT_BLOOM_CONFIG.exposure).toBe(1.10);
+    });
+
+    it('Sanitizes and bounds-checks bloom parameters accurately', () => {
+      const sanitized = sanitizeBloomConfig({
+        strength: -1.0,
+        radius: 5.0,
+        threshold: 2.0,
+        ambientHaloOpacity: 3.0,
+      });
+
+      expect(sanitized.strength).toBe(0);
+      expect(sanitized.radius).toBe(2.0);
+      expect(sanitized.threshold).toBe(1);
+      expect(sanitized.ambientHaloOpacity).toBe(1);
+    });
+
+    it('Computes adaptive bloom dynamically for normal, focus, and high-speed motion states', () => {
+      const normalState = computeAdaptiveBloom({
+        isFocusMode: false,
+        isHighSpeedMotion: false,
+      });
+      expect(normalState.effectiveStrength).toBeCloseTo(0.62, 3);
+      expect(normalState.effectiveRadius).toBeCloseTo(0.44, 3);
+
+      const focusState = computeAdaptiveBloom({
+        isFocusMode: true,
+        isHighSpeedMotion: false,
+      });
+      expect(focusState.effectiveStrength).toBeCloseTo(0.62 * 1.18, 3);
+      expect(focusState.effectiveRadius).toBeCloseTo(0.44, 3);
+
+      const motionState = computeAdaptiveBloom({
+        isFocusMode: false,
+        isHighSpeedMotion: true,
+      });
+      expect(motionState.effectiveStrength).toBeCloseTo(0.62, 3);
+      expect(motionState.effectiveRadius).toBeCloseTo(0.44 * 0.85, 3);
+
+      // Combined focus mode during high speed motion
+      const combined = computeAdaptiveBloom({
+        isFocusMode: true,
+        isHighSpeedMotion: true,
+      });
+      expect(combined.effectiveStrength).toBeCloseTo(0.62 * 1.18, 3);
+      expect(combined.effectiveRadius).toBeCloseTo(0.44 * 0.85, 3);
+    });
+  });
+
+  describe('Cinematic Depth-of-Field Post-Processing Engine', () => {
+    it('Has production-grade default configuration values', () => {
+      expect(DEFAULT_DOF_CONFIG.enabled).toBe(true);
+      expect(DEFAULT_DOF_CONFIG.focus).toBe(320.0);
+      expect(DEFAULT_DOF_CONFIG.aperture).toBeGreaterThan(0);
+      expect(DEFAULT_DOF_CONFIG.maxblur).toBe(0.018);
+      expect(DEFAULT_DOF_CONFIG.focalRange).toBe(28.0);
+    });
+
+    it('Computes precise optical autofocus distance along camera optical axis', () => {
+      const camera = new THREE.PerspectiveCamera(50, 16 / 9, 10, 8000);
+      camera.position.set(0, 0, 500);
+      camera.lookAt(0, 0, 0);
+      camera.updateMatrixWorld();
+
+      // Object at origin (0, 0, 0) is 500 units in front of camera
+      const targetPos: [number, number, number] = [0, 0, 0];
+      const dist = computeAutoFocusDistance(camera, targetPos);
+      expect(dist).toBeCloseTo(500, 1);
+
+      // Object at (0, 0, 200) is 300 units in front of camera
+      const dist2 = computeAutoFocusDistance(camera, [0, 0, 200]);
+      expect(dist2).toBeCloseTo(300, 1);
+    });
+
+    it('Computes circle of confusion zero for focused plane and progressive blur for background nodes', () => {
+      const focalDist = 320.0;
+      // In-focus tolerance deadband (focalRange = 28.0)
+      const exactCoC = computeCircleOfConfusion(320.0, focalDist);
+      expect(exactCoC).toBe(0.0);
+
+      const nearCoC = computeCircleOfConfusion(335.0, focalDist);
+      expect(nearCoC).toBe(0.0); // Within deadband
+
+      // Background nodes outside deadband
+      const farNodeDist = 800.0;
+      const farCoC = computeCircleOfConfusion(farNodeDist, focalDist);
+      expect(farCoC).toBeGreaterThan(0.0);
+      expect(farCoC).toBeLessThanOrEqual(DEFAULT_DOF_CONFIG.maxblur);
+
+      // Distant background node caps at maxblur
+      const veryFarCoC = computeCircleOfConfusion(2500.0, focalDist);
+      expect(veryFarCoC).toBe(DEFAULT_DOF_CONFIG.maxblur);
+    });
+
+    it('Computes adaptive depth of field parameters in focus mode vs ambient overview mode', () => {
+      // Focus mode active: rack-focus smoothly progresses toward targetDistance
+      const inFocus = computeAdaptiveDepthOfField({
+        isFocusMode: true,
+        targetDistance: 320.0,
+        currentFocus: 800.0,
+        currentMaxBlur: 0.0,
+        currentAperture: 0.0,
+      });
+      expect(inFocus.nextFocus).toBeLessThan(800.0);
+      expect(inFocus.nextFocus).toBeGreaterThan(320.0);
+      expect(inFocus.nextMaxBlur).toBeGreaterThan(0.0);
+      expect(inFocus.nextAperture).toBeGreaterThan(0.0);
+
+      // Ambient overview mode: blur is smoothly dialed down
+      const ambient = computeAdaptiveDepthOfField({
+        isFocusMode: false,
+        targetDistance: 1200.0,
+        currentFocus: 320.0,
+        currentMaxBlur: 0.018,
+        currentAperture: 0.00008,
+      });
+      expect(ambient.nextMaxBlur).toBeLessThan(0.018);
+      expect(ambient.nextAperture).toBeLessThan(0.00008);
+      expect(ambient.isSharp).toBe(true);
     });
   });
 });

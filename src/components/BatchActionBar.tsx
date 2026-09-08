@@ -57,7 +57,7 @@ export const BatchActionBar: React.FC<Props> = ({
   return (
     <div
       id="photosphere-batch-bar"
-      className="pointer-events-auto fixed bottom-24 left-1/2 -translate-x-1/2 z-30 flex flex-wrap items-center gap-2.5 px-4 py-2.5 bg-[#050507]/92 backdrop-blur-2xl border border-white/15 rounded-2xl shadow-[0_0_40px_rgba(0,0,0,0.85)] animate-slideUp text-white/90 max-w-[95vw]"
+      className="pointer-events-auto fixed bottom-24 left-1/2 -translate-x-1/2 z-10 flex flex-wrap items-center gap-2.5 px-4 py-2.5 bg-[#050507]/92 backdrop-blur-2xl border border-white/15 rounded-2xl shadow-[0_0_40px_rgba(0,0,0,0.85)] animate-slideUp text-white/90 max-w-[95vw]"
     >
       <div className="flex items-center gap-2 pr-3 border-r border-white/10 shrink-0">
         <div className="flex items-center justify-center min-w-6 h-6 px-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 font-mono text-xs font-bold border border-emerald-500/30">

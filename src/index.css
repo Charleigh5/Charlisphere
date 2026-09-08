@@ -84,3 +84,24 @@
   transform: translateZ(0);
   will-change: transform;
 }
+
+/* Floating memory label cards hover glow layer */
+.floating-memory-label-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.floating-memory-label-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at center, rgba(255,255,255,0.25), transparent 70%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  z-index: 1;
+}
+
+.floating-memory-label-card:hover::before {
+  opacity: 1;
+}

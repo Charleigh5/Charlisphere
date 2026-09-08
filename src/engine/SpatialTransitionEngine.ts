@@ -38,6 +38,10 @@ export class SpatialTransitionEngine {
    */
   public static readonly LAYOUT_TITLES: Record<Layout3DMode, string> = {
     FIBONACCI_SPHERE: 'Fibonacci Sphere',
+    STRUCTURED_SPHERE: 'Structured Sphere (Rings)',
+    PLANAR_GRID: 'Planar Grid Wall',
+    CYLINDER_GALLERY: 'Cylinder Gallery',
+    RING_CAROUSEL: 'Ring Carousel',
     DNA_HELIX: 'DNA Helix',
     GALAXY_CONSTELLATION: 'Galaxy Constellation',
     CUBIC_MATRIX: 'Cubic Matrix',
@@ -48,6 +52,10 @@ export class SpatialTransitionEngine {
    */
   public static readonly LAYOUT_GLYPHS: Record<Layout3DMode, string> = {
     FIBONACCI_SPHERE: '🌐',
+    STRUCTURED_SPHERE: '🧭',
+    PLANAR_GRID: '▦',
+    CYLINDER_GALLERY: '🏛️',
+    RING_CAROUSEL: '🎡',
     DNA_HELIX: '🧬',
     GALAXY_CONSTELLATION: '🌌',
     CUBIC_MATRIX: '🧊',
@@ -63,6 +71,34 @@ export class SpatialTransitionEngine {
       duration: 1.25,
       ease: 'power2.out',
       description: 'Equatorial spherical framing',
+    },
+    STRUCTURED_SPHERE: {
+      targetPhi: Math.PI * 0.5, // Balanced equatorial orbit
+      radiusMultiplier: 1.0,
+      duration: 1.25,
+      ease: 'power2.out',
+      description: 'Clean horizontal ring framing',
+    },
+    PLANAR_GRID: {
+      targetPhi: Math.PI * 0.5, // Straight-on frontal view
+      radiusMultiplier: 1.05,
+      duration: 1.2,
+      ease: 'power2.out',
+      description: 'Straight-lined planar gallery view',
+    },
+    CYLINDER_GALLERY: {
+      targetPhi: Math.PI * 0.5, // Center panoramic viewing angle
+      radiusMultiplier: 1.0,
+      duration: 1.25,
+      ease: 'power2.out',
+      description: 'Curved panoramic amphitheater view',
+    },
+    RING_CAROUSEL: {
+      targetPhi: Math.PI * 0.42, // Elevated carousel perspective
+      radiusMultiplier: 1.12,
+      duration: 1.25,
+      ease: 'power2.out',
+      description: 'Upright tiered ring carousel',
     },
     DNA_HELIX: {
       targetPhi: Math.PI * 0.44, // Gentle elevation to perceive vertical helix pitch
@@ -185,6 +221,14 @@ export class SpatialTransitionEngine {
     const maxStagger = 0.38; // Maximum delay in seconds across the swarm
 
     switch (toMode) {
+      case 'STRUCTURED_SPHERE':
+        return normalized * maxStagger;
+      case 'PLANAR_GRID':
+        return normalized * maxStagger * 0.8;
+      case 'CYLINDER_GALLERY':
+        return normalized * maxStagger;
+      case 'RING_CAROUSEL':
+        return ((index % 36) / 36) * maxStagger;
       case 'DNA_HELIX':
         // Cascade vertically along the ascending double helix
         return normalized * maxStagger;

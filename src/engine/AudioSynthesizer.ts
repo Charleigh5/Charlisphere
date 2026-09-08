@@ -74,7 +74,7 @@ export class AudioSynthesizer {
    * Card Selection Glass Chime (Spatialized if positions provided)
    */
   public static playCardSelect(
-    hue: number,
+    hue: number = 200,
     itemPos?: [number, number, number],
     cameraPos?: [number, number, number]
   ): void {
@@ -194,6 +194,46 @@ export class AudioSynthesizer {
 
     osc.start();
     osc.stop(ctx.currentTime + 0.56);
+  }
+
+  /**
+   * Focus Mode Automated Camera Flight Harmonic Swoosh
+   * Directionally pitched frequency sweep for next/prev memory transitions.
+   */
+  public static playFocusTransitionFlight(
+    direction: 'next' | 'prev' | 'direct' = 'next',
+    targetHue: number = 210
+  ): void {
+    if (this.isMuted) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const baseFreq = 260 * Math.pow(2, ((targetHue % 360) - 180) / 480);
+    const startFreq = direction === 'prev' ? baseFreq * 1.35 : baseFreq * 0.75;
+    const endFreq = direction === 'prev' ? baseFreq * 0.75 : baseFreq * 1.35;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const filter = ctx.createBiquadFilter();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(startFreq, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(endFreq, ctx.currentTime + 0.45);
+
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime((startFreq + endFreq) * 0.5, ctx.currentTime);
+    filter.Q.setValueAtTime(2.5, ctx.currentTime);
+
+    gain.gain.setValueAtTime(0.001, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.07, ctx.currentTime + 0.08);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start();
+    osc.stop(ctx.currentTime + 0.52);
   }
 }
 

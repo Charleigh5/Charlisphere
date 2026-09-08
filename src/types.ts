@@ -2,7 +2,15 @@
  * PhotoSphere 3D Memory Matrix - Core Type Definitions
  */
 
-export type Layout3DMode = 'FIBONACCI_SPHERE' | 'DNA_HELIX' | 'GALAXY_CONSTELLATION' | 'CUBIC_MATRIX';
+export type Layout3DMode = 
+  | 'FIBONACCI_SPHERE' 
+  | 'STRUCTURED_SPHERE'
+  | 'PLANAR_GRID'
+  | 'CYLINDER_GALLERY'
+  | 'RING_CAROUSEL'
+  | 'DNA_HELIX' 
+  | 'GALAXY_CONSTELLATION' 
+  | 'CUBIC_MATRIX';
 
 export type SpatialSortMode = 
   | 'CHRONOLOGICAL' 
@@ -110,6 +118,25 @@ export interface EngineStats {
   activeLayout: Layout3DMode;
   activeSort: SpatialSortMode;
   autoRotationStatus?: AutoRotationStatus;
+  bloomEnabled?: boolean;
+  holoOverlaysEnabled?: boolean;
+  depthOfFieldEnabled?: boolean;
+  focusDistance?: number;
+}
+
+export interface DepthOfFieldState {
+  enabled: boolean;
+  focus: number;
+  focalRange: number;
+  aperture: number;
+  maxblur: number;
+}
+
+export interface BloomPostProcessingState {
+  enabled: boolean;
+  strength: number;
+  radius: number;
+  threshold: number;
 }
 
 export type AutoRotationStatus = 'ACTIVE' | 'PAUSED_INTERACTION' | 'PAUSED_FOCUS' | 'DISABLED';

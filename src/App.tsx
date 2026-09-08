@@ -21,6 +21,7 @@ import { GooglePhotosConnector } from './connectors/GooglePhotosConnector';
 import { useGooglePhotosSync } from './hooks/useGooglePhotosSync';
 import { useBackgroundThemeAnalyzer } from './hooks/useBackgroundThemeAnalyzer';
 import { FocusTrailEngine } from './engine/FocusTrailEngine';
+import { FocusNavDirection } from './engine/FocusCameraTransitionEngine';
 
 export default function App() {
   // Core Memory State
@@ -32,6 +33,9 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [inspectedItem, setInspectedItem] = useState<PhotoMemoryItem | null>(null);
   const [focusedItem, setFocusedItem] = useState<PhotoMemoryItem | null>(null);
+  const [focusNavDirection, setFocusNavDirection] = useState<FocusNavDirection>('next');
+  const [isFocusTransitioning, setIsFocusTransitioning] = useState<boolean>(false);
+  const [focusTransitionProgress, setFocusTransitionProgress] = useState<number>(0);
   const [showClusterLabels, setShowClusterLabels] = useState<boolean>(true);
   const [showFocusTrail, setShowFocusTrail] = useState<boolean>(true);
   const [trailCount, setTrailCount] = useState<number>(0);
@@ -86,6 +90,13 @@ export default function App() {
   // Modal Dialog States
   const [isGooglePhotosOpen, setIsGooglePhotosOpen] = useState(false);
   const [isLocalUploadOpen, setIsLocalUploadOpen] = useState(false);
+  const [resetCameraSignal, setResetCameraSignal] = useState<number>(0);
+  const [isFooterCollapsed, setIsFooterCollapsed] = useState(false);
+
+  const handleResetCamera = useCallback(() => {
+    setFocusedItem(null);
+    setResetCameraSignal((c) => c + 1);
+  }, []);
 
   // Background Google Photos Sync Hook (Paused/Disabled in favor of local device batches)
   const handleSyncSuccess = useCallback((syncedItems: PhotoMemoryItem[]) => {
@@ -126,7 +137,38 @@ export default function App() {
     activeLayout: 'FIBONACCI_SPHERE',
     activeSort: 'CHRONOLOGICAL',
     autoRotationStatus: 'ACTIVE',
+    bloomEnabled: true,
+    depthOfFieldEnabled: true,
+    focusDistance: 320,
   });
+
+  // Atmospheric Bloom Post-Processing State
+  const [bloomEnabled, setBloomEnabled] = useState<boolean>(true);
+
+  const handleToggleBloom = useCallback(() => {
+    setBloomEnabled((prev) => !prev);
+    AudioSynthesizer.playCardSelect(45);
+  }, []);
+
+  // Cinematic Optical Depth-of-Field Post-Processing State
+  const [depthOfFieldEnabled, setDepthOfFieldEnabled] = useState<boolean>(true);
+
+  const handleToggleDepthOfField = useCallback(() => {
+    setDepthOfFieldEnabled((prev) => !prev);
+    AudioSynthesizer.playCardSelect(90);
+  }, []);
+
+  // Subtle 3D Holographic Metadata Overlays State & Controls
+  const [showHoloOverlays, setShowHoloOverlays] = useState<boolean>(true);
+
+  const handleToggleHoloOverlays = useCallback(() => {
+    setShowHoloOverlays((prev) => !prev);
+    AudioSynthesizer.playCardSelect(180);
+  }, []);
+
+  const handleReorderItems = useCallback((newItems: PhotoMemoryItem[]) => {
+    setItems(newItems);
+  }, []);
 
   // Ambient Auto-Rotation State & Controls
   const [autoRotateEnabled, setAutoRotateEnabled] = useState<boolean>(true);
@@ -328,7 +370,7 @@ export default function App() {
     const currentIndex = activeMatchingItems.findIndex((i) => i.id === focusedItem.id);
     const nextIndex = (currentIndex + 1) % activeMatchingItems.length;
     const nextItem = activeMatchingItems[nextIndex];
-    AudioSynthesizer.playCardSelect(nextItem.hue);
+    setFocusNavDirection('next');
     setFocusedItem(nextItem);
   }, [focusedItem, activeMatchingItems]);
 
@@ -337,7 +379,7 @@ export default function App() {
     const currentIndex = activeMatchingItems.findIndex((i) => i.id === focusedItem.id);
     const prevIndex = (currentIndex - 1 + activeMatchingItems.length) % activeMatchingItems.length;
     const prevItem = activeMatchingItems[prevIndex];
-    AudioSynthesizer.playCardSelect(prevItem.hue);
+    setFocusNavDirection('prev');
     setFocusedItem(prevItem);
   }, [focusedItem, activeMatchingItems]);
 
@@ -346,7 +388,7 @@ export default function App() {
     const currentIndex = activeMatchingItems.findIndex((i) => i.id === inspectedItem.id);
     const nextIndex = (currentIndex + 1) % activeMatchingItems.length;
     const nextItem = activeMatchingItems[nextIndex];
-    AudioSynthesizer.playCardSelect(nextItem.hue);
+    setFocusNavDirection('next');
     setInspectedItem(nextItem);
     setFocusedItem(nextItem);
   }, [inspectedItem, activeMatchingItems]);
@@ -356,7 +398,7 @@ export default function App() {
     const currentIndex = activeMatchingItems.findIndex((i) => i.id === inspectedItem.id);
     const prevIndex = (currentIndex - 1 + activeMatchingItems.length) % activeMatchingItems.length;
     const prevItem = activeMatchingItems[prevIndex];
-    AudioSynthesizer.playCardSelect(prevItem.hue);
+    setFocusNavDirection('prev');
     setInspectedItem(prevItem);
     setFocusedItem(prevItem);
   }, [inspectedItem, activeMatchingItems]);
@@ -401,9 +443,9 @@ export default function App() {
   };
 
   return (
-    <main className="relative w-screen h-screen overflow-hidden bg-[#050507] text-[#e2e8f0] select-none font-sans flex flex-col">
+    <main className="relative w-full h-screen overflow-hidden bg-[#050507] text-[#e2e8f0] select-none font-sans">
       {/* Immersive UI Background Lighting Atmosphere & Orbital Geometry */}
-      <div className="absolute inset-0 pointer-events-none overflow-hidden z-0">
+      <div className="absolute inset-0 w-full h-full pointer-events-none overflow-hidden z-0">
         <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-[#1e40af] opacity-20 blur-[120px]" />
         <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full bg-[#7e22ce] opacity-10 blur-[150px]" />
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] rounded-full border border-white/[0.03]" />
@@ -411,108 +453,154 @@ export default function App() {
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[400px] h-[400px] rounded-full border border-white/[0.02]" />
       </div>
 
-      {/* 3D WebGL Three.js Spatial Canvas */}
-      <div className="absolute inset-0 w-full h-full z-0">
-        <PhotoSphereCanvas
-          items={items}
+      {/* 3D WebGL Three.js Spatial Canvas Viewport (Docked to full container edges behind UI components) */}
+      <div
+        id="photosphere-viewport-container"
+        className="absolute inset-0 w-full h-full z-0 overflow-hidden"
+      >
+        <div
+          id="photosphere-3d-viewport"
+          className="relative w-full h-full overflow-hidden bg-[#07080d]"
+        >
+          <PhotoSphereCanvas
+            items={items}
+            layoutMode={layoutMode}
+            sortMode={sortMode}
+            searchQuery={searchQuery}
+            selectedIds={selectedIds}
+            focusedItem={focusedItem}
+            showClusterLabels={showClusterLabels}
+            onSelectCard={(item) => {
+              setFocusNavDirection('direct');
+              setInspectedItem(item);
+            }}
+            onFocusItem={(item) => {
+              setFocusNavDirection('direct');
+              setFocusedItem(item);
+            }}
+            focusNavDirection={focusNavDirection}
+            onFocusTransitionChange={(isTransitioning, progress) => {
+              setIsFocusTransitioning(isTransitioning);
+              setFocusTransitionProgress(progress);
+            }}
+            onLassoSelect={handleLassoSelect}
+            onToggleSelectId={handleToggleSelectId}
+            onLayoutChange={handleLayoutChange}
+            onSearchChange={setSearchQuery}
+            onToggleClusterLabels={() => setShowClusterLabels((prev) => !prev)}
+            onXRReady={(xr) => {
+              xrControlRef.current = xr;
+            }}
+            onVRStateChange={setIsVrActive}
+            vrPerformanceMode={vrPerformanceMode}
+            vrGestureSensitivity={vrGestureSensitivity}
+            showFocusTrail={showFocusTrail}
+            onToggleFocusTrail={handleToggleFocusTrail}
+            onTrailCountChange={setTrailCount}
+            autoRotateEnabled={autoRotateEnabled}
+            onToggleAutoRotate={handleToggleAutoRotate}
+            bloomEnabled={bloomEnabled}
+            onToggleBloom={handleToggleBloom}
+            depthOfFieldEnabled={depthOfFieldEnabled}
+            onToggleDepthOfField={handleToggleDepthOfField}
+            showHoloOverlays={showHoloOverlays}
+            onToggleHoloOverlays={handleToggleHoloOverlays}
+            onReorderItems={handleReorderItems}
+            resetCameraSignal={resetCameraSignal}
+            onStatsUpdate={(newStats) => {
+              setStats((prev) => ({
+                ...prev,
+                ...newStats,
+              }));
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Interactive Main Component Layer (HUD, Docks, Actions - Elevated above 3D Canvas) */}
+      <div
+        id="photosphere-hud-dock-layer"
+        className="absolute inset-0 w-full h-full pointer-events-none z-20 overflow-hidden"
+      >
+        {/* Floating Zero-Occlusion Glassmorphic HUD */}
+        <GlassmorphicHUD
           layoutMode={layoutMode}
           sortMode={sortMode}
           searchQuery={searchQuery}
-          selectedIds={selectedIds}
-          focusedItem={focusedItem}
+          stats={stats}
+          selectedCount={selectedIds.size}
+          activeSourceName={activeSourceName}
           showClusterLabels={showClusterLabels}
-          onSelectCard={(item) => setInspectedItem(item)}
-          onFocusItem={(item) => setFocusedItem(item)}
-          onLassoSelect={handleLassoSelect}
-          onToggleSelectId={handleToggleSelectId}
-          onLayoutChange={handleLayoutChange}
-          onSearchChange={setSearchQuery}
-          onToggleClusterLabels={() => setShowClusterLabels((prev) => !prev)}
-          onXRReady={(xr) => {
-            xrControlRef.current = xr;
-          }}
-          onVRStateChange={setIsVrActive}
-          vrPerformanceMode={vrPerformanceMode}
-          vrGestureSensitivity={vrGestureSensitivity}
           showFocusTrail={showFocusTrail}
+          trailCount={trailCount}
           onToggleFocusTrail={handleToggleFocusTrail}
-          onTrailCountChange={setTrailCount}
+          onClearTrail={handleClearTrail}
+          isVrActive={isVrActive}
           autoRotateEnabled={autoRotateEnabled}
           onToggleAutoRotate={handleToggleAutoRotate}
-          onStatsUpdate={(newStats) => {
-            setStats((prev) => ({
-              ...prev,
-              ...newStats,
-            }));
+          bloomEnabled={bloomEnabled}
+          onToggleBloom={handleToggleBloom}
+          depthOfFieldEnabled={depthOfFieldEnabled}
+          onToggleDepthOfField={handleToggleDepthOfField}
+          showHoloOverlays={showHoloOverlays}
+          onToggleHoloOverlays={handleToggleHoloOverlays}
+          themeProgress={themeProgress}
+          topThemes={topThemes}
+          onTriggerReanalysis={triggerReanalysis}
+          onToggleClusterLabels={() => {
+            setShowClusterLabels((prev) => !prev);
+            AudioSynthesizer.playSearchFilter();
           }}
+          onToggleVR={handleToggleVR}
+          onLayoutChange={handleLayoutChange}
+          onSortChange={handleSortChange}
+          onSearchChange={setSearchQuery}
+          onOpenGooglePhotos={() => setIsGooglePhotosOpen(true)}
+          onOpenLocalUpload={() => setIsLocalUploadOpen(true)}
+          onPresetCountChange={handlePresetCountChange}
+          onResetCamera={handleResetCamera}
+          onSelectAll={handleSelectAll}
+          onClearSelection={handleClearSelection}
+          isFooterCollapsed={isFooterCollapsed}
+          onToggleFooterCollapse={setIsFooterCollapsed}
+        />
+
+        {/* Focus Mode 3D Close-Up Orbit Dock */}
+        {!inspectedItem && (
+          <FocusModeDock
+            focusedItem={focusedItem}
+            items={activeMatchingItems}
+            trailCount={trailCount}
+            depthOfFieldEnabled={depthOfFieldEnabled}
+            onToggleDepthOfField={handleToggleDepthOfField}
+            onExitFocus={() => setFocusedItem(null)}
+            onSelectNext={handleFocusNext}
+            onSelectPrev={handleFocusPrev}
+            onOpenDeepInspect={(item) => setInspectedItem(item)}
+            isTransitioning={isFocusTransitioning}
+            transitionProgress={focusTransitionProgress}
+            navDirection={focusNavDirection}
+          />
+        )}
+
+        {/* 3D Screen Lasso & Batch Operations Dock */}
+        <BatchActionBar
+          selectedIds={selectedIds}
+          items={items}
+          onClearSelection={handleClearSelection}
+          onStartSlideshow={() => {
+            const firstSelected = items.find((i) => selectedIds.has(i.id));
+            if (firstSelected) {
+              setFocusedItem(firstSelected);
+              setInspectedItem(firstSelected);
+            }
+          }}
+          onExportSelected={handleExportSelected}
+          onBatchDelete={handleBatchDelete}
+          onBatchAddTag={handleBatchAddTag}
+          onSelectAllMatching={handleSelectAll}
         />
       </div>
-
-      {/* Floating Zero-Occlusion Glassmorphic HUD */}
-      <GlassmorphicHUD
-        layoutMode={layoutMode}
-        sortMode={sortMode}
-        searchQuery={searchQuery}
-        stats={stats}
-        selectedCount={selectedIds.size}
-        activeSourceName={activeSourceName}
-        showClusterLabels={showClusterLabels}
-        showFocusTrail={showFocusTrail}
-        trailCount={trailCount}
-        onToggleFocusTrail={handleToggleFocusTrail}
-        onClearTrail={handleClearTrail}
-        isVrActive={isVrActive}
-        autoRotateEnabled={autoRotateEnabled}
-        onToggleAutoRotate={handleToggleAutoRotate}
-        themeProgress={themeProgress}
-        topThemes={topThemes}
-        onTriggerReanalysis={triggerReanalysis}
-        onToggleClusterLabels={() => {
-          setShowClusterLabels((prev) => !prev);
-          AudioSynthesizer.playSearchFilter();
-        }}
-        onToggleVR={handleToggleVR}
-        onLayoutChange={handleLayoutChange}
-        onSortChange={handleSortChange}
-        onSearchChange={setSearchQuery}
-        onOpenGooglePhotos={() => setIsGooglePhotosOpen(true)}
-        onOpenLocalUpload={() => setIsLocalUploadOpen(true)}
-        onPresetCountChange={handlePresetCountChange}
-        onResetCamera={() => setFocusedItem(null)}
-        onSelectAll={handleSelectAll}
-        onClearSelection={handleClearSelection}
-      />
-
-      {/* Focus Mode 3D Close-Up Orbit Dock */}
-      {!inspectedItem && (
-        <FocusModeDock
-          focusedItem={focusedItem}
-          items={activeMatchingItems}
-          trailCount={trailCount}
-          onExitFocus={() => setFocusedItem(null)}
-          onSelectNext={handleFocusNext}
-          onSelectPrev={handleFocusPrev}
-          onOpenDeepInspect={(item) => setInspectedItem(item)}
-        />
-      )}
-
-      {/* 3D Screen Lasso & Batch Operations Dock */}
-      <BatchActionBar
-        selectedIds={selectedIds}
-        items={items}
-        onClearSelection={handleClearSelection}
-        onStartSlideshow={() => {
-          const firstSelected = items.find((i) => selectedIds.has(i.id));
-          if (firstSelected) {
-            setFocusedItem(firstSelected);
-            setInspectedItem(firstSelected);
-          }
-        }}
-        onExportSelected={handleExportSelected}
-        onBatchDelete={handleBatchDelete}
-        onBatchAddTag={handleBatchAddTag}
-        onSelectAllMatching={handleSelectAll}
-      />
 
       {/* WebXR VR Immersion Launch & Device Modal */}
       <VRImmersionModal

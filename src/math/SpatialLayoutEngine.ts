@@ -41,7 +41,7 @@ export class SpatialLayoutEngine {
 
   /**
    * 2.2 Adaptive Camera Distance
-   * D_cam(N, FOV, aspect) = (R(N) / sin(FOV_vert / 2)) * max(1.0, 1.0 / aspect) * 1.18
+   * Calibrated so the sphere is centered with equal black space around all four edges
    */
   public static computeCameraDistance(
     N: number,
@@ -51,8 +51,160 @@ export class SpatialLayoutEngine {
     const R = this.computeDynamicRadius(N);
     const fovRad = (fovVertDegrees * Math.PI) / 180;
     const aspectMultiplier = Math.max(1.0, 1.0 / Math.max(0.1, aspect));
-    const dist = (R / Math.sin(fovRad / 2)) * aspectMultiplier * 1.18;
-    return Math.max(600, dist);
+    const dist = (R / Math.sin(fovRad / 2)) * aspectMultiplier * 1.72;
+    return Math.max(900, dist);
+  }
+
+  /**
+   * Layout: Structured Geodesic Ring Sphere (Clean straight-lined latitude rings)
+   * Cards are organized into straight horizontal parallel rings with zero roll
+   */
+  public static computeStructuredSphere(
+    index: number,
+    total: number,
+    radius: number
+  ): { position: [number, number, number]; rotation: [number, number, number] } {
+    const N = Math.max(1, total);
+    // Determine number of latitude bands based on item count
+    const numBands = Math.max(3, Math.min(18, Math.round(Math.sqrt(N * 0.8))));
+    
+    // Allocate items to bands proportionally to circumference (sin(phi))
+    // Compute cumulative capacities
+    let totalWeight = 0;
+    const bandWeights: number[] = [];
+    for (let b = 0; b < numBands; b++) {
+      const phi = ((b + 0.5) / numBands) * Math.PI;
+      const weight = Math.sin(phi);
+      bandWeights.push(weight);
+      totalWeight += weight;
+    }
+
+    // Determine which band this index belongs to
+    let accum = 0;
+    let targetBand = 0;
+    let indexInBand = 0;
+    let countInTargetBand = 1;
+
+    for (let b = 0; b < numBands; b++) {
+      const bandCap = Math.max(1, Math.round((bandWeights[b] / totalWeight) * N));
+      if (index < accum + bandCap || b === numBands - 1) {
+        targetBand = b;
+        indexInBand = index - accum;
+        countInTargetBand = bandCap;
+        break;
+      }
+      accum += bandCap;
+    }
+
+    const phi = ((targetBand + 0.5) / numBands) * Math.PI;
+    const theta = (indexInBand / Math.max(1, countInTargetBand)) * 2 * Math.PI;
+
+    const r = radius * Math.sin(phi);
+    const x = r * Math.cos(theta);
+    const yPos = radius * Math.cos(phi);
+    const z = r * Math.sin(theta);
+
+    // Cards face outward with level horizon (straight horizontal lines)
+    const rotY = Math.atan2(-x, -z);
+    const rotX = Math.asin(Math.max(-1, Math.min(1, yPos / radius)));
+
+    return {
+      position: [x, yPos, z],
+      rotation: [rotX, rotY, 0],
+    };
+  }
+
+  /**
+   * Layout: Planar Grid Gallery Wall (Pristine straight-lined matrix)
+   * Images arranged in clean horizontal rows and vertical columns with equal spacing
+   */
+  public static computePlanarGrid(
+    index: number,
+    total: number,
+    radius: number
+  ): { position: [number, number, number]; rotation: [number, number, number] } {
+    const N = Math.max(1, total);
+    // 16:9 / 4:3 landscape gallery grid
+    const cols = Math.max(3, Math.ceil(Math.sqrt(N * 1.5)));
+    const rows = Math.ceil(N / cols);
+
+    const spacingX = this.W_BASE * 1.45;
+    const spacingY = this.H_BASE * 1.45;
+
+    const col = index % cols;
+    const row = Math.floor(index / cols);
+
+    const x = (col - (cols - 1) / 2) * spacingX;
+    const y = ((rows - 1) / 2 - row) * spacingY;
+    const z = 0;
+
+    return {
+      position: [x, y, z],
+      rotation: [0, 0, 0], // Perfectly straight facing forward
+    };
+  }
+
+  /**
+   * Layout: Cylindrical Gallery (Curved wall with straight vertical columns)
+   * Cards sit in level horizontal rows and straight vertical columns along an amphitheater arc
+   */
+  public static computeCylinderGallery(
+    index: number,
+    total: number,
+    radius: number
+  ): { position: [number, number, number]; rotation: [number, number, number] } {
+    const N = Math.max(1, total);
+    const cols = Math.max(6, Math.ceil(Math.sqrt(N * 2)));
+    const rows = Math.ceil(N / cols);
+
+    const col = index % cols;
+    const row = Math.floor(index / cols);
+
+    // 240 degree curved panoramic amphitheater
+    const arcAngle = (240 * Math.PI) / 180;
+    const theta = ((col - (cols - 1) / 2) / Math.max(1, cols - 1)) * arcAngle;
+
+    const rCyl = radius * 1.1;
+    const x = rCyl * Math.sin(theta);
+    const z = -rCyl * Math.cos(theta) + rCyl * 0.25;
+    const y = ((rows - 1) / 2 - row) * (this.H_BASE * 1.45);
+
+    // Straight vertical columns with azimuthal curve
+    return {
+      position: [x, y, z],
+      rotation: [0, -theta, 0],
+    };
+  }
+
+  /**
+   * Layout: Ring Carousel (Concentric upright circular rings)
+   */
+  public static computeRingCarousel(
+    index: number,
+    total: number,
+    radius: number
+  ): { position: [number, number, number]; rotation: [number, number, number] } {
+    const N = Math.max(1, total);
+    const tiers = Math.max(1, Math.min(4, Math.ceil(N / 36)));
+    const itemsPerTier = Math.ceil(N / tiers);
+
+    const tier = Math.floor(index / itemsPerTier);
+    const indexInTier = index % itemsPerTier;
+
+    const countInTier = Math.min(itemsPerTier, N - tier * itemsPerTier);
+    const theta = (indexInTier / Math.max(1, countInTier)) * 2 * Math.PI;
+
+    const tierRadius = radius * (0.8 + tier * 0.35);
+    const x = tierRadius * Math.cos(theta);
+    const z = tierRadius * Math.sin(theta);
+    const y = (tier - (tiers - 1) / 2) * (this.H_BASE * 1.6);
+
+    const rotY = Math.atan2(-x, -z);
+
+    return {
+      position: [x, y, z],
+      rotation: [0, rotY, 0],
+    };
   }
 
   /**
@@ -188,17 +340,31 @@ export class SpatialLayoutEngine {
 
       let transform: { position: [number, number, number]; rotation: [number, number, number] };
 
+      const isSpherical = layoutMode === 'FIBONACCI_SPHERE' || layoutMode === 'STRUCTURED_SPHERE';
+
       // Geographic sorting special projection for sphere
-      if (sortMode === 'GEOGRAPHIC' && layoutMode === 'FIBONACCI_SPHERE' && item.exif.latitude !== undefined && item.exif.longitude !== undefined) {
+      if (sortMode === 'GEOGRAPHIC' && isSpherical && item.exif.latitude !== undefined && item.exif.longitude !== undefined) {
         transform = this.computeGeographicPosition(item.exif.latitude, item.exif.longitude, radius);
-      } else if (sortMode === 'CHROMATIC' && layoutMode === 'FIBONACCI_SPHERE') {
+      } else if (sortMode === 'CHROMATIC' && isSpherical) {
         transform = this.computeChromaticPosition(item.hue, rank, N, radius);
-      } else if (sortMode === 'RELATIONAL' && layoutMode === 'FIBONACCI_SPHERE') {
+      } else if (sortMode === 'RELATIONAL' && isSpherical) {
         transform = this.computeRelationalPosition(item.people, rank, N, radius);
       } else {
         switch (layoutMode) {
           case 'FIBONACCI_SPHERE':
             transform = this.computeFibonacciSphere(rank, N, radius);
+            break;
+          case 'STRUCTURED_SPHERE':
+            transform = this.computeStructuredSphere(rank, N, radius);
+            break;
+          case 'PLANAR_GRID':
+            transform = this.computePlanarGrid(rank, N, radius);
+            break;
+          case 'CYLINDER_GALLERY':
+            transform = this.computeCylinderGallery(rank, N, radius);
+            break;
+          case 'RING_CAROUSEL':
+            transform = this.computeRingCarousel(rank, N, radius);
             break;
           case 'DNA_HELIX':
             transform = this.computeDnaHelix(rank, N, radius);
@@ -208,6 +374,9 @@ export class SpatialLayoutEngine {
             break;
           case 'CUBIC_MATRIX':
             transform = this.computeCubicMatrix(rank, N, radius);
+            break;
+          default:
+            transform = this.computeStructuredSphere(rank, N, radius);
             break;
         }
       }
